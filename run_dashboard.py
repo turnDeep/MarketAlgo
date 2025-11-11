@@ -14,6 +14,8 @@ except ImportError:
 
 from market_dashboard import MarketDashboard
 from dashboard_visualizer import DashboardVisualizer
+from dashboard_google_sheets import write_to_google_sheets
+import os
 
 
 def main():
@@ -96,9 +98,41 @@ def main():
     )
     visualizer.save_html(html, 'market_dashboard.html')
 
+    # Google Sheets出力
+    google_sheets_enabled = os.getenv('GOOGLE_SHEETS_ENABLED', 'false').lower() == 'true'
+    if google_sheets_enabled:
+        print("\n### Writing to Google Sheets...")
+        credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
+        spreadsheet_name = os.getenv('GOOGLE_SPREADSHEET_NAME', 'Market Dashboard')
+
+        try:
+            success = write_to_google_sheets(
+                credentials_file=credentials_file,
+                spreadsheet_name=spreadsheet_name,
+                exposure=exposure,
+                market_performance=market_performance,
+                sectors_performance=sectors_performance,
+                macro_performance=macro_performance,
+                screener_results=screener_results,
+                factors_vs_sp500=factors_vs_sp500,
+                bond_yields=bond_yields,
+                power_trend=power_trend
+            )
+
+            if success:
+                print(f"✓ Data written to Google Sheets: {spreadsheet_name}")
+            else:
+                print("✗ Failed to write to Google Sheets")
+        except Exception as e:
+            print(f"✗ Error writing to Google Sheets: {e}")
+    else:
+        print("\n(Google Sheets output disabled. Set GOOGLE_SHEETS_ENABLED=true to enable)")
+
     print("\n✅ Dashboard generation complete!")
     print(f"📊 JSON data: {json_output}")
     print(f"🌐 HTML dashboard: market_dashboard.html")
+    if google_sheets_enabled:
+        print(f"📈 Google Sheets: {spreadsheet_name}")
 
 
 if __name__ == '__main__':
