@@ -476,26 +476,6 @@ class MarketDashboard:
         except Exception as e:
             print(f"Error updating market exposure history: {e}")
 
-    def calculate_market_breadth(self, index_ticker: str = 'SPY') -> Dict:
-        """
-        Market Breadth (市場幅指標) を計算
-
-        Returns:
-            - advance_decline_ratio: 上昇株/下落株比率
-            - new_highs_lows: 新高値/新安値比率
-            - stocks_above_ma: 移動平均線上の株式割合
-        """
-        # 簡易版：主要指数のデータから推定
-        # 実際にはすべての構成銘柄を分析する必要がある
-
-        # ここではプレースホルダーとして簡易的な値を返す
-        return {
-            'advance_decline_ratio': 1.2,  # 仮の値
-            'new_highs_lows': 2.5,  # 仮の値
-            'stocks_above_50ma_pct': 65.0,  # 仮の値
-            'stocks_above_200ma_pct': 58.0,  # 仮の値
-        }
-
     def calculate_ticker_performance(self, tickers: Dict[str, str]) -> pd.DataFrame:
         """
         指定されたティッカーリストのパフォーマンス指標をすべて計算する

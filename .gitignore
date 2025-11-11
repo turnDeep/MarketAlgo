@@ -140,3 +140,7 @@ stage_history_*/
 sampled_stocks.csv
 *.html
 data/
+
+# Google Sheets credentials
+credentials.json
+*-credentials.json
