@@ -4,13 +4,15 @@
 
 ## 機能
 
+**統合ダッシュボード**: すべてのセクションを1つのシートに縦に配置
+
 - **Market**: S&P 500、NASDAQ 100、Russell 2000などの主要インデックスの追跡
 - **Sectors**: 各セクターETFのパフォーマンス追跡
 - **Macro**: 米ドル指数、VIX、債券などのマクロ指標の追跡
 
 各ティッカーについて以下の情報を表示：
 - 現在価格と日次変化率
-- 相対強度（RS）とRSパーセンタイル
+- 相対強度（RS）とRSパーセンタイル（Market・Sectorsのみ）
 - 各期間のパフォーマンス（YTD、1週間、1ヶ月、1年）
 - 52週高値からの距離
 - 移動平均との関係（10MA、20MA、50MA、200MA）
@@ -109,15 +111,41 @@ python market_dashboard.py
 
 ### ティッカーの追加・削除
 
-`market_dashboard.py`の`main()`関数内で、以下の辞書を編集してティッカーを追加・削除できます：
+`market_dashboard.py`の`main()`関数内で、`sections_config`リストを編集してティッカーを追加・削除できます：
 
 ```python
-market_tickers = {
-    'SPY': 'S&P 500',
-    'QQQ': 'NASDAQ 100',
-    # ここに追加
-}
+sections_config = [
+    {
+        'name': 'Market',
+        'tickers': {
+            'SPY': 'S&P 500',
+            'QQQ': 'NASDAQ 100',
+            # ここに追加
+        },
+        'skip_rs': False  # Relative Strengthを表示
+    },
+    {
+        'name': 'Sectors',
+        'tickers': {
+            'XLK': 'Technology',
+            # ここに追加
+        },
+        'skip_rs': False
+    },
+    {
+        'name': 'Macro',
+        'tickers': {
+            '^VIX': 'VIX',
+            # ここに追加
+        },
+        'skip_rs': True  # Macroセクションはrelative strengthをスキップ
+    }
+]
 ```
+
+### 出力形式
+
+すべてのセクション（Market、Sectors、Macro）は1つの「Dashboard」シートに縦に配置されます。各セクションの間にはセクションヘッダー行が挿入されます。
 
 ## トラブルシューティング
 

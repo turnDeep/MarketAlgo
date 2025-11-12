@@ -271,47 +271,18 @@ class MarketDashboard:
 
         return round(percentile, 2)
 
-    def create_market_dashboard(self, tickers_dict, benchmark='SPY', sheet_name='Market',
-                               skip_relative_strength=False):
+    def collect_section_data(self, tickers_dict, benchmark_prices_short=None, skip_relative_strength=False):
         """
-        マーケットダッシュボードを作成
+        セクションデータを収集
 
         Args:
             tickers_dict: ティッカーと表示名の辞書
-            benchmark: ベンチマークティッカー
-            sheet_name: シート名
-            skip_relative_strength: Relative StrengthとRS STS %をスキップするか（Macroセクション用）
+            benchmark_prices_short: ベンチマークの短期価格データ
+            skip_relative_strength: Relative StrengthとRS STS %をスキップするか
+
+        Returns:
+            list: ダッシュボードデータのリスト
         """
-        # シートの作成または取得
-        try:
-            worksheet = self.spreadsheet.worksheet(sheet_name)
-            worksheet.clear()
-        except gspread.WorksheetNotFound:
-            worksheet = self.spreadsheet.add_worksheet(
-                title=sheet_name,
-                rows=100,
-                cols=20
-            )
-
-        # ヘッダーの設定
-        headers = [
-            'ticker', 'index', 'Price', '% 1D', 'Relative Strength', 'RS STS %',
-            '% YTD', '% 1 W', '% 1 M', '% 1 Y',
-            '% From 52W High',
-            '10MA', '20MA', '50MA', '200MA', '20>50MA', '50>200MA'
-        ]
-
-        # ベンチマークのデータを取得（Relative Strength計算用）
-        benchmark_prices_short = None
-        if not skip_relative_strength:
-            print(f"ベンチマーク {benchmark} のデータを取得中...")
-            benchmark_prices_short = self.get_historical_prices(benchmark, days=25)
-
-            if benchmark_prices_short is None:
-                print("エラー: ベンチマークデータの取得に失敗しました")
-                return
-
-        # データ収集
         dashboard_data = []
 
         for ticker, display_name in tickers_dict.items():
@@ -335,13 +306,13 @@ class MarketDashboard:
                 prev_price = prices_long['close'].iloc[-2] if len(prices_long) > 1 else latest_price
                 pct_change_1d = ((latest_price - prev_price) / prev_price) * 100
 
-            # 相対強度計算（Macroセクションの場合はスキップ）
+            # 相対強度計算
             if skip_relative_strength:
                 rs_values = None
                 rs_sparkline = ""
                 rs_percentile = None
             else:
-                if ticker == benchmark:
+                if ticker == 'SPY':
                     rs_values = np.ones(25)
                     rs_sparkline = "━" * 20
                 else:
@@ -398,8 +369,53 @@ class MarketDashboard:
             # API制限を考慮した待機
             time.sleep(0.4)
 
-        # データをスプレッドシートに書き込み
-        self._write_to_sheet(worksheet, headers, dashboard_data, sheet_name)
+        return dashboard_data
+
+    def create_unified_dashboard(self, sections_config, benchmark='SPY'):
+        """
+        統合ダッシュボードを作成（すべてのセクションを1つのシートに縦に配置）
+
+        Args:
+            sections_config: セクション設定のリスト
+                [{'name': 'Market', 'tickers': {...}, 'skip_rs': False}, ...]
+            benchmark: ベンチマークティッカー
+        """
+        # シートの作成または取得
+        sheet_name = 'Dashboard'
+        try:
+            worksheet = self.spreadsheet.worksheet(sheet_name)
+            worksheet.clear()
+        except gspread.WorksheetNotFound:
+            worksheet = self.spreadsheet.add_worksheet(
+                title=sheet_name,
+                rows=200,
+                cols=20
+            )
+
+        # ベンチマークのデータを取得
+        print(f"ベンチマーク {benchmark} のデータを取得中...")
+        benchmark_prices_short = self.get_historical_prices(benchmark, days=25)
+
+        if benchmark_prices_short is None:
+            print("エラー: ベンチマークデータの取得に失敗しました")
+            return
+
+        # 各セクションのデータを収集
+        all_sections_data = []
+        for section in sections_config:
+            print(f"\n=== {section['name']} セクション処理中 ===")
+            section_data = self.collect_section_data(
+                section['tickers'],
+                benchmark_prices_short if not section['skip_rs'] else None,
+                section['skip_rs']
+            )
+            all_sections_data.append({
+                'name': section['name'],
+                'data': section_data
+            })
+
+        # データをシートに書き込み
+        self._write_unified_sheet(worksheet, all_sections_data)
 
         print(f"\n'{sheet_name}' シート完了!")
 
@@ -429,59 +445,99 @@ class MarketDashboard:
 
         return sparkline
 
-    def _write_to_sheet(self, worksheet, headers, data, sheet_name='Sheet'):
+    def _write_unified_sheet(self, worksheet, sections_data):
         """
-        データをスプレッドシートに書き込み
+        統合シートにデータを書き込み
         """
-        # ヘッダーを書き込み
-        worksheet.update('A1', [headers])
+        current_row = 1
 
-        # ヘッダーの書式設定
-        header_format = {
-            'backgroundColor': {'red': 0.2, 'green': 0.2, 'blue': 0.2},
-            'textFormat': {
-                'bold': True,
-                'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
-                'fontSize': 10
-            },
-            'horizontalAlignment': 'CENTER',
-            'verticalAlignment': 'MIDDLE'
-        }
-        worksheet.format('A1:Q1', header_format)
+        for section in sections_data:
+            section_name = section['name']
+            data = section['data']
 
-        # データ行を準備
-        rows = []
-        for item in data:
-            is_inverse = item.get('is_inverse', False)
-            skip_rs = item.get('skip_rs', False)
+            # セクションヘッダー行
+            section_header = [[section_name]]
+            worksheet.update(f'A{current_row}', section_header)
 
-            row = [
-                item['ticker'],
-                item['index'],
-                item['Price'],
-                item['% 1D'],
-                item['Relative Strength'] if not skip_rs else '',  # Macroの場合は空白
-                item['RS STS %'] if not skip_rs else '',  # Macroの場合は空白
-                item['% YTD'],
-                item['% 1 W'],
-                item['% 1 M'],
-                item['% 1 Y'],
-                item['% From 52W High'],
-                self._trend_indicator(item['10MA'], is_inverse),
-                self._trend_indicator(item['20MA'], is_inverse),
-                self._trend_indicator(item['50MA'], is_inverse),
-                self._trend_indicator(item['200MA'], is_inverse),
-                self._trend_indicator(item['20>50MA'], is_inverse),
-                self._trend_indicator(item['50>200MA'], is_inverse)
+            # セクションヘッダーの書式設定
+            section_header_format = {
+                'backgroundColor': {'red': 0.1, 'green': 0.1, 'blue': 0.1},
+                'textFormat': {
+                    'bold': True,
+                    'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
+                    'fontSize': 12
+                },
+                'horizontalAlignment': 'LEFT',
+                'verticalAlignment': 'MIDDLE'
+            }
+            worksheet.format(f'A{current_row}:Q{current_row}', section_header_format)
+            worksheet.merge_cells(f'A{current_row}:Q{current_row}')
+            current_row += 1
+
+            # カラムヘッダー
+            headers = [
+                'ticker', 'index', 'Price', '% 1D', 'Relative Strength', 'RS STS %',
+                '% YTD', '% 1 W', '% 1 M', '% 1 Y',
+                '% From 52W High',
+                '10MA', '20MA', '50MA', '200MA', '20>50MA', '50>200MA'
             ]
-            rows.append(row)
+            worksheet.update(f'A{current_row}', [headers])
 
-        # データを一括書き込み
-        if rows:
-            worksheet.update(f'A2:Q{len(rows)+1}', rows)
+            # カラムヘッダーの書式設定
+            header_format = {
+                'backgroundColor': {'red': 0.2, 'green': 0.2, 'blue': 0.2},
+                'textFormat': {
+                    'bold': True,
+                    'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
+                    'fontSize': 10
+                },
+                'horizontalAlignment': 'CENTER',
+                'verticalAlignment': 'MIDDLE'
+            }
+            worksheet.format(f'A{current_row}:Q{current_row}', header_format)
+            current_row += 1
 
-            # 条件付き書式を適用
-            self._apply_conditional_formatting(worksheet, len(rows), data)
+            # データ行を準備
+            rows = []
+            for item in data:
+                is_inverse = item.get('is_inverse', False)
+                skip_rs = item.get('skip_rs', False)
+
+                row = [
+                    item['ticker'],
+                    item['index'],
+                    item['Price'],
+                    item['% 1D'],
+                    item['Relative Strength'] if not skip_rs else '',
+                    item['RS STS %'] if not skip_rs else '',
+                    item['% YTD'],
+                    item['% 1 W'],
+                    item['% 1 M'],
+                    item['% 1 Y'],
+                    item['% From 52W High'],
+                    self._trend_indicator(item['10MA'], is_inverse),
+                    self._trend_indicator(item['20MA'], is_inverse),
+                    self._trend_indicator(item['50MA'], is_inverse),
+                    self._trend_indicator(item['200MA'], is_inverse),
+                    self._trend_indicator(item['20>50MA'], is_inverse),
+                    self._trend_indicator(item['50>200MA'], is_inverse)
+                ]
+                rows.append(row)
+
+            # データを一括書き込み
+            if rows:
+                data_start_row = current_row
+                worksheet.update(f'A{current_row}:Q{current_row + len(rows) - 1}', rows)
+
+                # 条件付き書式を適用
+                self._apply_conditional_formatting_range(
+                    worksheet, data_start_row, len(rows), data
+                )
+
+                current_row += len(rows)
+
+            # セクション間の空行
+            current_row += 1
 
     def _trend_indicator(self, is_above, is_inverse=False):
         """
@@ -504,42 +560,40 @@ class MarketDashboard:
             # 通常: 上なら緑▲、下なら赤▼
             return '▲' if is_above else '▼'
 
-    def _apply_conditional_formatting(self, worksheet, num_rows, data):
+    def _apply_conditional_formatting_range(self, worksheet, start_row, num_rows, data):
         """
-        条件付き書式を適用
+        指定範囲に条件付き書式を適用
         """
-        for i in range(2, num_rows + 2):
-            row_idx = i - 2
-            if row_idx >= len(data):
+        for i in range(num_rows):
+            row_num = start_row + i
+            if i >= len(data):
                 continue
 
-            item = data[row_idx]
+            item = data[i]
             is_inverse = item.get('is_inverse', False)
             skip_rs = item.get('skip_rs', False)
 
             # % 1D列 (D列)
-            self._format_performance_cell(worksheet, f'D{i}', item['% 1D'])
+            self._format_performance_cell(worksheet, f'D{row_num}', item['% 1D'])
 
-            # RS STS %列 (F列) - Macroの場合はスキップ
+            # RS STS %列 (F列)
             if not skip_rs and item['RS STS %'] is not None:
-                self._format_percentile_cell(worksheet, f'F{i}', item['RS STS %'])
+                self._format_percentile_cell(worksheet, f'F{row_num}', item['RS STS %'])
 
-            # Performance列 (G-J列)
-            self._format_performance_cell(worksheet, f'G{i}', item['% YTD'])
-            self._format_performance_cell(worksheet, f'H{i}', item['% 1 W'])
-            self._format_performance_cell(worksheet, f'I{i}', item['% 1 M'])
-            self._format_performance_cell(worksheet, f'J{i}', item['% 1 Y'])
-
-            # % From 52W High列 (K列)
-            self._format_performance_cell(worksheet, f'K{i}', item['% From 52W High'])
+            # Performance列 (G-K列)
+            self._format_performance_cell(worksheet, f'G{row_num}', item['% YTD'])
+            self._format_performance_cell(worksheet, f'H{row_num}', item['% 1 W'])
+            self._format_performance_cell(worksheet, f'I{row_num}', item['% 1 M'])
+            self._format_performance_cell(worksheet, f'J{row_num}', item['% 1 Y'])
+            self._format_performance_cell(worksheet, f'K{row_num}', item['% From 52W High'])
 
             # Trend Indicators (L-Q列)
-            self._format_trend_cell(worksheet, f'L{i}', item['10MA'], is_inverse)
-            self._format_trend_cell(worksheet, f'M{i}', item['20MA'], is_inverse)
-            self._format_trend_cell(worksheet, f'N{i}', item['50MA'], is_inverse)
-            self._format_trend_cell(worksheet, f'O{i}', item['200MA'], is_inverse)
-            self._format_trend_cell(worksheet, f'P{i}', item['20>50MA'], is_inverse)
-            self._format_trend_cell(worksheet, f'Q{i}', item['50>200MA'], is_inverse)
+            self._format_trend_cell(worksheet, f'L{row_num}', item['10MA'], is_inverse)
+            self._format_trend_cell(worksheet, f'M{row_num}', item['20MA'], is_inverse)
+            self._format_trend_cell(worksheet, f'N{row_num}', item['50MA'], is_inverse)
+            self._format_trend_cell(worksheet, f'O{row_num}', item['200MA'], is_inverse)
+            self._format_trend_cell(worksheet, f'P{row_num}', item['20>50MA'], is_inverse)
+            self._format_trend_cell(worksheet, f'Q{row_num}', item['50>200MA'], is_inverse)
 
     def _format_performance_cell(self, worksheet, cell, value):
         """
@@ -636,93 +690,82 @@ def main():
         print("3. APIキーは https://site.financialmodelingprep.com/developer/docs から取得できます")
         return
 
-    # Market セクションのティッカー
-    market_tickers = {
-        'SPY': 'S&P 500',
-        'QQQ': 'NASDAQ 100',
-        'MAGS': 'Magnificent Seven',
-        'RSP': 'Eql Wght S&P 500',
-        'QQEW': 'Eql Wght NASDAQ 100',
-        'IWM': 'Russell 2000'
-    }
-
-    # Sectors セクションのティッカー
-    sector_tickers = {
-        'EPOL': 'Poland',
-        'EWG': 'Germany',
-        'GLD': 'Gold',
-        'KWEB': 'China',
-        'IEW': 'Europe',
-        'ITA': 'Aerospace / Defense',
-        'CIBR': 'Cybersecurity',
-        'IBIT': 'Bitcoin',
-        'BLOK': 'Blockchain',
-        'IAI': 'Broker',
-        'NLR': 'Uranium / Nuclear',
-        'XLF': 'Finance',
-        'XLU': 'Utilities',
-        'TAN': 'Solar',
-        'UFO': 'Space',
-        'XLP': 'Consumer Staples',
-        'FFTY': 'IBD 50',
-        'INDA': 'India',
-        'ARKW': 'ARKW',
-        'XLK': 'Technology',
-        'XLE': 'Energy',
-        'IPO': 'IPO',
-        'SOXX': 'Semiconductor',
-        'MDY': 'MidCap 400',
-        'SCHD': 'Dividend',
-        'DIA': 'Dow Jones',
-        'ITB': 'Home Construction',
-        'USO': 'Oil',
-        'IBB': 'Biotechnology'
-    }
-
-    # Macro セクションのティッカー
-    macro_tickers = {
-        'DX-Y.NYB': 'U.S. Dollar',
-        '^VIX': 'VIX',
-        'TLT': 'Bond 20+ Year'
-    }
+    # セクション設定
+    sections_config = [
+        {
+            'name': 'Market',
+            'tickers': {
+                'SPY': 'S&P 500',
+                'QQQ': 'NASDAQ 100',
+                'MAGS': 'Magnificent Seven',
+                'RSP': 'Eql Wght S&P 500',
+                'QQEW': 'Eql Wght NASDAQ 100',
+                'IWM': 'Russell 2000'
+            },
+            'skip_rs': False
+        },
+        {
+            'name': 'Sectors',
+            'tickers': {
+                'EPOL': 'Poland',
+                'EWG': 'Germany',
+                'GLD': 'Gold',
+                'KWEB': 'China',
+                'IEW': 'Europe',
+                'ITA': 'Aerospace / Defense',
+                'CIBR': 'Cybersecurity',
+                'IBIT': 'Bitcoin',
+                'BLOK': 'Blockchain',
+                'IAI': 'Broker',
+                'NLR': 'Uranium / Nuclear',
+                'XLF': 'Finance',
+                'XLU': 'Utilities',
+                'TAN': 'Solar',
+                'UFO': 'Space',
+                'XLP': 'Consumer Staples',
+                'FFTY': 'IBD 50',
+                'INDA': 'India',
+                'ARKW': 'ARKW',
+                'XLK': 'Technology',
+                'XLE': 'Energy',
+                'IPO': 'IPO',
+                'SOXX': 'Semiconductor',
+                'MDY': 'MidCap 400',
+                'SCHD': 'Dividend',
+                'DIA': 'Dow Jones',
+                'ITB': 'Home Construction',
+                'USO': 'Oil',
+                'IBB': 'Biotechnology'
+            },
+            'skip_rs': False
+        },
+        {
+            'name': 'Macro',
+            'tickers': {
+                'DX-Y.NYB': 'U.S. Dollar',
+                '^VIX': 'VIX',
+                'TLT': 'Bond 20+ Year'
+            },
+            'skip_rs': True
+        }
+    ]
 
     try:
         # ダッシュボードの作成
         dashboard = MarketDashboard(FMP_API_KEY, CREDENTIALS_FILE, SPREADSHEET_NAME)
 
         print("\n" + "="*80)
-        print("マーケットダッシュボード作成開始")
+        print("統合マーケットダッシュボード作成開始")
         print("="*80)
 
-        # Market シート
-        print("\n=== Market Dashboard作成中 ===")
-        dashboard.create_market_dashboard(
-            tickers_dict=market_tickers,
-            benchmark='SPY',
-            sheet_name='Market',
-            skip_relative_strength=False  # MarketとSectorsはRelative Strengthを表示
-        )
-
-        # Sectors シート
-        print("\n=== Sectors Dashboard作成中 ===")
-        dashboard.create_market_dashboard(
-            tickers_dict=sector_tickers,
-            benchmark='SPY',
-            sheet_name='Sectors',
-            skip_relative_strength=False  # MarketとSectorsはRelative Strengthを表示
-        )
-
-        # Macro シート
-        print("\n=== Macro Dashboard作成中 ===")
-        dashboard.create_market_dashboard(
-            tickers_dict=macro_tickers,
-            benchmark='SPY',
-            sheet_name='Macro',
-            skip_relative_strength=True  # MacroはRelative Strengthを表示しない
+        # 統合ダッシュボードの作成
+        dashboard.create_unified_dashboard(
+            sections_config=sections_config,
+            benchmark='SPY'
         )
 
         print("\n" + "="*80)
-        print("すべてのダッシュボード作成完了!")
+        print("ダッシュボード作成完了!")
         print(f"スプレッドシートURL: {dashboard.spreadsheet.url}")
         print("="*80)
 
