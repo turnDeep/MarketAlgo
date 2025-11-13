@@ -60,7 +60,7 @@
   },
 
   // Lifecycle scripts
-  "postCreateCommand": "pip install -e . && pip install pytest black flake8 mypy pylint autopep8",
+  "postCreateCommand": "pip install -r requirements.txt && pip install pytest black flake8 mypy pylint autopep8",
 
   // Mount docker socket for docker-in-docker if needed
   "mounts": [
