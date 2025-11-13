@@ -19,9 +19,10 @@ IBD Screeners 実行スクリプト
 import os
 import argparse
 from dotenv import load_dotenv
+
 from ibd_data_collector import IBDDataCollector
 from ibd_ratings_calculator import IBDRatingsCalculator
-from ibd_screeners_db import IBDScreenersDB
+from ibd_screeners import IBDScreeners
 
 
 def main():
@@ -83,7 +84,7 @@ def main():
             print("ステップ3: スクリーナー実行")
             print("="*80)
 
-            screeners = IBDScreenersDB(
+            screeners = IBDScreeners(
                 credentials_file=CREDENTIALS_FILE,
                 spreadsheet_name=SPREADSHEET_NAME,
                 db_path=DB_PATH

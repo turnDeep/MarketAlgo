@@ -3,15 +3,13 @@ IBD Ratings Calculator
 
 データベースに保存された生の値（RS値、EPS要素）をパーセンタイルランキングに変換し、
 最終的なレーティング（RS Rating, EPS Rating, Composite Rating）を計算します。
-
-オプション2: 正確な実装
-- RS Ratingと同様に、全銘柄のEPSデータを収集
-- 各要素（最新四半期成長率、前四半期成長率、年間成長率、安定性）を個別にパーセンタイルランキング
-- 重み付けして最終EPSランキングを計算
 """
 
-import numpy as np
 from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
 from ibd_database import IBDDatabase
 
 
