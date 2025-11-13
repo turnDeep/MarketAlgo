@@ -28,11 +28,11 @@ class FMPTickerFetcher:
 
     def __init__(self, api_key: str = None, rate_limit: int = None):
         """
-        Initialize FMP Ticker Fetcher
+        FMP Ticker Fetcherの初期化
 
         Args:
-            api_key: FMP API Key (環境変数 FMP_API_KEY から自動取得可能)
-            rate_limit: API rate limit per minute (環境変数 FMP_RATE_LIMIT から自動取得可能)
+            api_key: FMP API Key（環境変数 FMP_API_KEY から自動取得可能）
+            rate_limit: 1分あたりのAPIレート制限（環境変数 FMP_RATE_LIMIT から自動取得可能）
         """
         self.api_key = api_key or os.getenv('FMP_API_KEY')
         if not self.api_key:
@@ -47,17 +47,17 @@ class FMPTickerFetcher:
         self.request_timestamps = []
 
     def _enforce_rate_limit(self):
-        """Enforce the configured API rate limit per minute."""
+        """設定されたAPIレート制限を適用"""
         current_time = time.time()
-        # Remove timestamps older than 60 seconds
+        # 60秒以上前のタイムスタンプを削除
         self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
 
         if len(self.request_timestamps) >= self.rate_limit:
-            # Sleep until the oldest request is older than 60 seconds
+            # 最も古いリクエストから60秒経過するまで待機
             sleep_time = 60 - (current_time - self.request_timestamps[0]) + 0.1
             print(f"レート制限に達しました。{sleep_time:.1f}秒待機します...")
             time.sleep(sleep_time)
-            # Trim the list again after sleeping
+            # 待機後、再度古いタイムスタンプを削除
             current_time = time.time()
             self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
 
@@ -65,13 +65,13 @@ class FMPTickerFetcher:
 
     def _make_request(self, params: Dict) -> List[Dict]:
         """
-        Make API request with error handling and rate limiting.
+        エラーハンドリングとレート制限を考慮したAPIリクエストを実行
 
         Args:
-            params: Query parameters
+            params: クエリパラメータ
 
         Returns:
-            JSON response as list of dicts
+            List[Dict]: JSONレスポンス（辞書のリスト）
         """
         self._enforce_rate_limit()
 

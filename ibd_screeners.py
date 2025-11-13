@@ -281,7 +281,7 @@ class IBDScreeners:
                 if vol_metrics['vol_change_pct'] < 20:
                     continue
 
-                # Market Cap チェック
+                # 時価総額チェック
                 profile = self.db.get_company_profile(ticker)
                 if not profile or profile['market_cap'] is None:
                     continue
@@ -409,7 +409,7 @@ class IBDScreeners:
                 if vol_metrics['avg_vol_90'] <= 100:
                     continue
 
-                # Market Cap チェック
+                # 時価総額チェック
                 profile = self.db.get_company_profile(ticker)
                 if not profile or profile['market_cap'] is None:
                     continue
