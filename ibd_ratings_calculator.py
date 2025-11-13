@@ -556,12 +556,12 @@ class IBDRatingsCalculator:
 
     def calculate_industry_group_rs(self, ticker: str) -> Optional[Dict]:
         """
-        Industry Group RS（業界グループ相対強度）を計算
+        Industry Group RS（業界グループ相対強度）を計算（非推奨 - 旧実装）
 
-        Industry Group RSは、個別銘柄のパフォーマンスとその業界グループ（セクター）の
-        パフォーマンスを比較した相対強度指標です。
+        注意: このメソッドは現在使用されていません。
+        新しい実装では calculate_all_industry_group_rs() を使用してください。
 
-        計算方法:
+        旧計算方法（セクターパフォーマンスデータが必要で、データ不足で失敗する可能性がある）:
         1. 銘柄のRS値（株価パフォーマンス）を取得
         2. 銘柄が属するセクターのRS値を計算
         3. Industry Group RS = 銘柄RS値 - セクターRS値（相対強度）
@@ -625,45 +625,112 @@ class IBDRatingsCalculator:
         """
         全銘柄のIndustry Group RSを計算
 
+        IBD方式:
+        1. 各業界（industry）に属する全銘柄のRS値の平均を計算
+        2. 業界平均RS値を全業界間でパーセンタイルランキングに変換
+        3. 各銘柄に所属業界のパーセンタイルランキングを割り当て
+
+        この方式により、セクターパフォーマンスデータが不要で、
+        既に計算済みのRS値のみを使用して効率的に計算できます。
+
         Returns:
-            dict: {ticker: industry_group_rs_value} の辞書
+            dict: {ticker: industry_group_rs_percentile} の辞書
         """
         print("\n全銘柄のIndustry Group RSを計算中...")
 
+        # 1. 全銘柄のRS値を取得
+        all_rs_values = self.db.get_all_rs_values()
+
+        # 2. 業界ごとに銘柄をグループ化
+        industry_tickers = {}  # {industry: [tickers]}
+        industry_rs_values = {}  # {industry: [rs_values]}
+        ticker_to_info = {}  # {ticker: (industry, sector)}
+
         all_tickers = self.db.get_all_tickers()
-        industry_group_rs_dict = {}
-        success_count = 0
 
         for idx, ticker in enumerate(all_tickers):
             if (idx + 1) % 500 == 0:
                 print(f"  進捗: {idx + 1}/{len(all_tickers)} 銘柄")
 
             try:
-                ig_rs_data = self.calculate_industry_group_rs(ticker)
-                if ig_rs_data:
-                    # DBに保存
+                profile = self.db.get_company_profile(ticker)
+                if not profile:
+                    continue
+
+                industry = profile.get('industry')
+                sector = profile.get('sector')
+
+                # industryがない場合はsectorを代替として使用
+                if not industry and sector:
+                    industry = sector
+
+                if not industry:
+                    continue
+
+                rs_value = all_rs_values.get(ticker)
+
+                if rs_value is not None:
+                    if industry not in industry_tickers:
+                        industry_tickers[industry] = []
+                        industry_rs_values[industry] = []
+
+                    industry_tickers[industry].append(ticker)
+                    industry_rs_values[industry].append(rs_value)
+                    ticker_to_info[ticker] = (industry, sector)
+
+            except Exception as e:
+                continue
+
+        print(f"  {len(industry_tickers)} 業界グループを検出")
+
+        # 3. 各業界の平均RS値を計算（過去6ヶ月のパフォーマンスの近似値）
+        industry_avg_rs = {}
+        for industry, rs_list in industry_rs_values.items():
+            if rs_list and len(rs_list) > 0:
+                # 業界内の銘柄が3銘柄以上ある場合のみ有効な業界グループとみなす
+                if len(rs_list) >= 3:
+                    industry_avg_rs[industry] = np.mean(rs_list)
+
+        print(f"  {len(industry_avg_rs)} 業界グループ（3銘柄以上）のRS平均値を計算")
+
+        # 4. 業界平均RS値をパーセンタイルランキングに変換（1-100）
+        print("  業界グループRSをパーセンタイルランキングに変換中...")
+        industry_rs_percentile = self.calculate_percentile_ranking(industry_avg_rs)
+
+        # 5. データベースに保存
+        success_count = 0
+        for ticker, (industry, sector) in ticker_to_info.items():
+            try:
+                stock_rs_value = all_rs_values.get(ticker)
+                industry_rs_value = industry_avg_rs.get(industry)
+                industry_group_rs_percentile = industry_rs_percentile.get(industry)
+
+                if industry_group_rs_percentile is not None:
                     self.db.insert_industry_group_rs(
                         ticker,
-                        ig_rs_data['sector'],
-                        ig_rs_data['industry'],
-                        ig_rs_data['stock_rs_value'],
-                        ig_rs_data['sector_rs_value'],
-                        ig_rs_data['industry_group_rs_value']
+                        sector if sector else industry,
+                        industry,
+                        stock_rs_value,
+                        industry_rs_value,  # 業界平均RS値
+                        industry_group_rs_percentile  # 業界のパーセンタイルランキング
                     )
-                    industry_group_rs_dict[ticker] = ig_rs_data['industry_group_rs_value']
                     success_count += 1
             except Exception as e:
                 continue
 
         print(f"  {success_count} 銘柄のIndustry Group RSを計算しました")
 
-        # Industry Group RS値をパーセンタイルランキングに変換
+        # 6. 各銘柄に業界のパーセンタイルランキングを返す
         print("  Industry Group RSをパーセンタイルランキングに変換中...")
-        ig_rs_percentile_dict = self.calculate_percentile_ranking(industry_group_rs_dict)
+        industry_group_rs_dict = {}
+        for ticker, (industry, _) in ticker_to_info.items():
+            percentile = industry_rs_percentile.get(industry)
+            if percentile is not None:
+                industry_group_rs_dict[ticker] = percentile
 
-        print(f"  {len(ig_rs_percentile_dict)} 銘柄のIndustry Group RS Ratingを計算")
+        print(f"  {len(industry_group_rs_dict)} 銘柄のIndustry Group RS Ratingを計算")
 
-        return ig_rs_percentile_dict
+        return industry_group_rs_dict
 
     # ==================== 52週高値からの距離計算 ====================
 
