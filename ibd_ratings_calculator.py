@@ -505,6 +505,156 @@ class IBDRatingsCalculator:
         except Exception as e:
             return None
 
+    # ==================== Industry Group RS計算 ====================
+
+    def calculate_sector_rs_value(self, sector_perf_df: pd.DataFrame) -> Optional[float]:
+        """
+        セクターのRS値を計算（株価RS値と同じ方式）
+
+        Args:
+            sector_perf_df: セクターパフォーマンスのDataFrame（日付、change_percentageカラム）
+
+        Returns:
+            float: セクターのRS値
+        """
+        if sector_perf_df is None or len(sector_perf_df) < 252:
+            return None
+
+        try:
+            # 累積リターンを計算（change_percentageから）
+            sector_perf_df = sector_perf_df.copy()
+            sector_perf_df['cumulative_return'] = (1 + sector_perf_df['change_percentage'] / 100).cumprod()
+
+            # 各期間のROC（Rate of Change）を計算
+            cum_return = sector_perf_df['cumulative_return'].values
+
+            if len(cum_return) < 252:
+                return None
+
+            roc_63d = ((cum_return[-1] / cum_return[-63]) - 1) * 100 if cum_return[-63] != 0 else 0
+            roc_126d = ((cum_return[-1] / cum_return[-126]) - 1) * 100 if cum_return[-126] != 0 else 0
+            roc_189d = ((cum_return[-1] / cum_return[-189]) - 1) * 100 if cum_return[-189] != 0 else 0
+            roc_252d = ((cum_return[-1] / cum_return[-252]) - 1) * 100 if cum_return[-252] != 0 else 0
+
+            # IBD式の加重平均（最新四半期に40%の重み）
+            sector_rs_value = 0.4 * roc_63d + 0.2 * roc_126d + 0.2 * roc_189d + 0.2 * roc_252d
+
+            return sector_rs_value
+
+        except Exception as e:
+            return None
+
+    def calculate_industry_group_rs(self, ticker: str) -> Optional[Dict]:
+        """
+        Industry Group RS（業界グループ相対強度）を計算
+
+        Industry Group RSは、個別銘柄のパフォーマンスとその業界グループ（セクター）の
+        パフォーマンスを比較した相対強度指標です。
+
+        計算方法:
+        1. 銘柄のRS値（株価パフォーマンス）を取得
+        2. 銘柄が属するセクターのRS値を計算
+        3. Industry Group RS = 銘柄RS値 - セクターRS値（相対強度）
+
+        Args:
+            ticker: ティッカーシンボル
+
+        Returns:
+            dict: {
+                'sector': セクター名,
+                'industry': 業界名,
+                'stock_rs_value': 銘柄のRS値,
+                'sector_rs_value': セクターのRS値,
+                'industry_group_rs_value': Industry Group RS値
+            }
+        """
+        try:
+            # 1. 銘柄のプロファイル（セクター情報）を取得
+            profile = self.db.get_company_profile(ticker)
+            if not profile or not profile.get('sector'):
+                return None
+
+            sector = profile['sector']
+            industry = profile.get('industry')
+
+            # 2. 銘柄のRS値を取得
+            rs_values = self.db.get_all_rs_values()
+            stock_rs_value = rs_values.get(ticker)
+
+            if stock_rs_value is None:
+                return None
+
+            # 3. セクターパフォーマンスデータを取得
+            sector_perf_df = self.db.get_sector_performance_history(sector, days=300)
+
+            if sector_perf_df is None or len(sector_perf_df) < 252:
+                return None
+
+            # 4. セクターのRS値を計算
+            sector_rs_value = self.calculate_sector_rs_value(sector_perf_df)
+
+            if sector_rs_value is None:
+                return None
+
+            # 5. Industry Group RS = 銘柄RS - セクターRS（相対強度）
+            # 正の値は銘柄がセクターをアウトパフォーム、負の値はアンダーパフォーム
+            industry_group_rs_value = stock_rs_value - sector_rs_value
+
+            return {
+                'sector': sector,
+                'industry': industry,
+                'stock_rs_value': stock_rs_value,
+                'sector_rs_value': sector_rs_value,
+                'industry_group_rs_value': industry_group_rs_value
+            }
+
+        except Exception as e:
+            return None
+
+    def calculate_all_industry_group_rs(self) -> Dict[str, float]:
+        """
+        全銘柄のIndustry Group RSを計算
+
+        Returns:
+            dict: {ticker: industry_group_rs_value} の辞書
+        """
+        print("\n全銘柄のIndustry Group RSを計算中...")
+
+        all_tickers = self.db.get_all_tickers()
+        industry_group_rs_dict = {}
+        success_count = 0
+
+        for idx, ticker in enumerate(all_tickers):
+            if (idx + 1) % 500 == 0:
+                print(f"  進捗: {idx + 1}/{len(all_tickers)} 銘柄")
+
+            try:
+                ig_rs_data = self.calculate_industry_group_rs(ticker)
+                if ig_rs_data:
+                    # DBに保存
+                    self.db.insert_industry_group_rs(
+                        ticker,
+                        ig_rs_data['sector'],
+                        ig_rs_data['industry'],
+                        ig_rs_data['stock_rs_value'],
+                        ig_rs_data['sector_rs_value'],
+                        ig_rs_data['industry_group_rs_value']
+                    )
+                    industry_group_rs_dict[ticker] = ig_rs_data['industry_group_rs_value']
+                    success_count += 1
+            except Exception as e:
+                continue
+
+        print(f"  {success_count} 銘柄のIndustry Group RSを計算しました")
+
+        # Industry Group RS値をパーセンタイルランキングに変換
+        print("  Industry Group RSをパーセンタイルランキングに変換中...")
+        ig_rs_percentile_dict = self.calculate_percentile_ranking(industry_group_rs_dict)
+
+        print(f"  {len(ig_rs_percentile_dict)} 銘柄のIndustry Group RS Ratingを計算")
+
+        return ig_rs_percentile_dict
+
     # ==================== 52週高値からの距離計算 ====================
 
     def calculate_52w_high_distance(self, ticker: str) -> Optional[float]:
@@ -625,8 +775,9 @@ class IBDRatingsCalculator:
         2. EPS Ratingを計算（パーセンタイルランキング方式）
         3. SMR要素を計算してデータベースに保存
         4. SMR Ratingを計算（パーセンタイルランキング方式）
-        5. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
-        6. データベースに保存
+        5. Industry Group RSを計算
+        6. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
+        7. データベースに保存
         """
         print(f"\n{'='*80}")
         print("全レーティング計算開始")
@@ -669,10 +820,13 @@ class IBDRatingsCalculator:
         # 4. SMR Ratingを計算（パーセンタイルランキング方式）
         smr_ratings_dict = self.calculate_smr_ratings()
 
-        # 5. 全銘柄のA/D RatingとComposite Ratingを計算
+        # 5. Industry Group RSを計算
+        industry_group_rs_ratings_dict = self.calculate_all_industry_group_rs()
+
+        # 6. 全銘柄のA/D RatingとComposite Ratingを計算
         print(f"\n全 {len(all_tickers)} 銘柄のA/D RatingとComposite Ratingを計算中...")
 
-        # 6. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
+        # 7. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
         calculated_count = 0
         for idx, ticker in enumerate(all_tickers):
             if (idx + 1) % 500 == 0:
@@ -692,12 +846,15 @@ class IBDRatingsCalculator:
                 # SMR Ratingを取得
                 smr_rating = smr_ratings_dict.get(ticker)
 
+                # Industry Group RS Ratingを取得
+                industry_group_rs = industry_group_rs_ratings_dict.get(ticker)
+
                 # 52週高値からの距離を計算
                 price_vs_52w_high = self.calculate_52w_high_distance(ticker)
 
-                # Composite Ratingを計算
+                # Composite Ratingを計算（Industry Group RSを含む）
                 comp_rating = self.calculate_comp_rating(
-                    rs_rating, eps_rating, ad_rating, price_vs_52w_high, smr_rating
+                    rs_rating, eps_rating, ad_rating, price_vs_52w_high, smr_rating, industry_group_rs
                 )
 
                 # データベースに保存
@@ -708,7 +865,8 @@ class IBDRatingsCalculator:
                     ad_rating,
                     comp_rating,
                     price_vs_52w_high,
-                    smr_rating
+                    smr_rating,
+                    industry_group_rs
                 )
 
                 calculated_count += 1
