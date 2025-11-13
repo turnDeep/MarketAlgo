@@ -14,14 +14,17 @@ from ibd_database import IBDDatabase
 class IBDScreeners:
     """データベースを使用したIBDスクリーナー"""
 
-    def __init__(self, credentials_file: str, spreadsheet_name: str, db_path: str = 'ibd_data.db'):
+    def __init__(self, credentials_file: str, spreadsheet_name: str, db_path: str = 'ibd_data.db',
+                 owner_email: str = None):
         """
         Args:
             credentials_file: Googleサービスアカウントの認証情報JSONファイルパス
             spreadsheet_name: Googleスプレッドシートの名前
             db_path: データベースファイルのパス
+            owner_email: スプレッドシート作成時に所有権を転送するGoogleアカウントのメールアドレス（オプション）
         """
         self.db = IBDDatabase(db_path)
+        self.owner_email = owner_email
 
         # Google Sheets認証
         try:
@@ -33,10 +36,47 @@ class IBDScreeners:
         # スプレッドシートを開く（存在しない場合は作成）
         try:
             self.spreadsheet = self.gc.open(spreadsheet_name)
+            print(f"既存のスプレッドシート '{spreadsheet_name}' を開きました")
         except gspread.SpreadsheetNotFound:
-            self.spreadsheet = self.gc.create(spreadsheet_name)
-            self.spreadsheet.share('', perm_type='anyone', role='reader')
-            print(f"新しいスプレッドシート '{spreadsheet_name}' を作成しました")
+            # サービスアカウントでスプレッドシートを作成する場合、
+            # 所有権を転送するユーザーのメールアドレスが必要
+            if not self.owner_email:
+                print(f"\nエラー: スプレッドシート '{spreadsheet_name}' が見つかりません")
+                print("サービスアカウントは直接スプレッドシートを作成できません（ストレージクォータの制限）")
+                print("\n解決方法:")
+                print("1. 自分のGoogleアカウントで手動でスプレッドシートを作成")
+                print("2. サービスアカウントのメールアドレス（credentials.json内）を「編集者」として共有")
+                print("3. または、環境変数 GOOGLE_OWNER_EMAIL にあなたのGmailアドレスを設定")
+                raise Exception("スプレッドシートが見つからず、所有権転送用のメールアドレスも指定されていません")
+
+            try:
+                # ユーザーと共有してスプレッドシートを作成
+                print(f"スプレッドシート '{spreadsheet_name}' を作成中...")
+                self.spreadsheet = self.gc.create(spreadsheet_name)
+
+                # すぐにユーザーと共有（編集者として）
+                print(f"  {self.owner_email} と共有中...")
+                response = self.spreadsheet.share(
+                    email_address=self.owner_email,
+                    perm_type='user',
+                    role='writer',
+                    notify=False
+                )
+
+                # 所有権を転送
+                print(f"  所有権を {self.owner_email} に転送中...")
+                permission_id = response.json()["id"]
+                self.spreadsheet.transfer_ownership(permission_id)
+
+                print(f"新しいスプレッドシート '{spreadsheet_name}' を作成し、所有権を転送しました")
+
+            except Exception as create_error:
+                print(f"\nスプレッドシートの作成に失敗しました: {create_error}")
+                print("\n代替案: 以下の手順で手動で作成してください:")
+                print("1. https://sheets.google.com で新しいスプレッドシートを作成")
+                print(f"2. 名前を '{spreadsheet_name}' に変更")
+                print("3. credentials.json内のサービスアカウントのメールアドレスを「編集者」として共有")
+                raise
 
     def close(self):
         """リソースをクリーンアップ"""

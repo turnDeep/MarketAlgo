@@ -32,6 +32,7 @@ def main():
     FMP_API_KEY = os.getenv('FMP_API_KEY')
     CREDENTIALS_FILE = os.getenv('CREDENTIALS_FILE', 'credentials.json')
     SPREADSHEET_NAME = os.getenv('SPREADSHEET_NAME', 'Market Dashboard')
+    GOOGLE_OWNER_EMAIL = os.getenv('GOOGLE_OWNER_EMAIL')  # Optional: For creating new spreadsheets
     MAX_WORKERS = int(os.getenv('ORATNEK_MAX_WORKERS', '3'))  # Default: 3 (Starter), Recommended: 6 (Premium), 10+ (Professional)
     DB_PATH = os.getenv('IBD_DB_PATH', 'ibd_data.db')
 
@@ -99,7 +100,8 @@ def main():
             screeners = IBDScreeners(
                 credentials_file=CREDENTIALS_FILE,
                 spreadsheet_name=SPREADSHEET_NAME,
-                db_path=DB_PATH
+                db_path=DB_PATH,
+                owner_email=GOOGLE_OWNER_EMAIL
             )
             screeners.run_all_screeners()
             screeners.close()
