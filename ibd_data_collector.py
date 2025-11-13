@@ -35,32 +35,62 @@ class IBDDataCollector:
 
     def fetch_with_rate_limit(self, url: str, params: dict = None) -> Optional[dict]:
         """レート制限を考慮したAPIリクエスト（curl_cffiを使用してBot検出を回避）"""
-        self.rate_limiter.wait_if_needed()
+        import time
 
         if params is None:
             params = {}
         params['apikey'] = self.fmp_api_key
 
-        try:
-            response = self.session.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            # デバッグ用にエラーを記録（最初の10件のみ表示）
-            if not hasattr(self, '_error_count'):
-                self._error_count = 0
+        # リトライ設定
+        max_retries = 3
+        retry_delays = [60, 120, 240]  # 429エラー時の待機時間（秒）
 
-            if self._error_count < 10:
-                print(f"\n[API Error] URL: {url}")
-                print(f"  Status: {getattr(e, 'response', None) and e.response.status_code if hasattr(e, 'response') else 'N/A'}")
-                print(f"  Error: {type(e).__name__}: {str(e)[:200]}")
+        for attempt in range(max_retries + 1):
+            self.rate_limiter.wait_if_needed()
+
+            try:
+                response = self.session.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                status_code = None
                 if hasattr(e, 'response') and e.response is not None:
-                    print(f"  Response: {e.response.text[:300]}")
-                self._error_count += 1
-                if self._error_count == 10:
-                    print("\n[以降のエラーメッセージは抑制されます]\n")
+                    status_code = getattr(e.response, 'status_code', None)
 
-            return None
+                # HTTP 429 エラー（レート制限）の場合
+                if status_code == 429:
+                    if attempt < max_retries:
+                        wait_time = retry_delays[attempt]
+                        if not hasattr(self, '_rate_limit_warning_shown'):
+                            print(f"\n[レート制限警告] APIレート制限に達しました")
+                            print(f"  待機時間を増やしてリトライします")
+                            self._rate_limit_warning_shown = True
+
+                        print(f"  {wait_time}秒待機してリトライします... (試行 {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"\n[エラー] 最大リトライ回数に達しました。レート制限を超過しています。")
+                        print(f"  APIプランのアップグレードを検討してください。")
+                        return None
+
+                # その他のエラー
+                if not hasattr(self, '_error_count'):
+                    self._error_count = 0
+
+                if self._error_count < 10:
+                    print(f"\n[API Error] URL: {url}")
+                    print(f"  Status: {status_code if status_code else 'N/A'}")
+                    print(f"  Error: {type(e).__name__}: {str(e)[:200]}")
+                    if hasattr(e, 'response') and e.response is not None:
+                        print(f"  Response: {e.response.text[:300]}")
+                    self._error_count += 1
+                    if self._error_count == 10:
+                        print("\n[以降のエラーメッセージは抑制されます]\n")
+
+                return None
+
+        return None
 
     # ==================== データ取得メソッド ====================
 
