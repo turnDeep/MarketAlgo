@@ -200,16 +200,17 @@ class IBDDataCollector:
 
         return results
 
-    def collect_all_data(self, tickers_list: List[str], max_workers: int = 10):
+    def collect_all_data(self, tickers_list: List[str], max_workers: int = 3):
         """
         全銘柄のデータを並列収集
 
         Args:
             tickers_list: ティッカーリスト
-            max_workers: 最大ワーカー数
+            max_workers: 最大ワーカー数（デフォルト3: 750 calls/min制限に対応）
         """
         print(f"\n{'='*80}")
         print(f"全銘柄のデータ収集開始（{len(tickers_list)} 銘柄）")
+        print(f"並列ワーカー数: {max_workers} (レート制限: 750 calls/min)")
         print(f"{'='*80}")
 
         # バッチサイズを設定
@@ -493,7 +494,7 @@ class IBDDataCollector:
 
     # ==================== メインワークフロー ====================
 
-    def run_full_collection(self, use_full_dataset: bool = True, max_workers: int = 10):
+    def run_full_collection(self, use_full_dataset: bool = True, max_workers: int = 3):
         """
         完全なデータ収集ワークフローを実行
 
@@ -504,7 +505,7 @@ class IBDDataCollector:
 
         Args:
             use_full_dataset: 全銘柄を処理するか（Falseの場合は500銘柄に制限）
-            max_workers: 並列処理のワーカー数
+            max_workers: 並列処理のワーカー数（デフォルト3: 750 calls/min制限に対応）
         """
         # 1. ティッカーリスト取得
         print("\nティッカーリストを取得中...")
@@ -562,7 +563,7 @@ def main():
         collector = IBDDataCollector(FMP_API_KEY)
 
         # テストモードで実行（500銘柄）
-        collector.run_full_collection(use_full_dataset=False, max_workers=10)
+        collector.run_full_collection(use_full_dataset=False, max_workers=3)
 
         collector.close()
 
