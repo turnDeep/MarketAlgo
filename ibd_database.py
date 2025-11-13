@@ -1,0 +1,490 @@
+"""
+IBD Database Manager
+
+SQLiteデータベースを使用して、株価、EPS、その他の財務データを集約・管理します。
+これにより、効率的なデータアクセスと再利用が可能になります。
+"""
+
+import sqlite3
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+import json
+
+
+class IBDDatabase:
+    """IBD スクリーナー用のSQLiteデータベース管理クラス"""
+
+    def __init__(self, db_path='ibd_data.db'):
+        """
+        Args:
+            db_path: データベースファイルのパス
+        """
+        self.db_path = db_path
+        self.conn = None
+        self.initialize_database()
+
+    def initialize_database(self):
+        """データベースの初期化とテーブル作成"""
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.cursor()
+
+        # 1. 銘柄マスターテーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tickers (
+                ticker TEXT PRIMARY KEY,
+                exchange TEXT,
+                name TEXT,
+                sector TEXT,
+                industry TEXT,
+                market_cap REAL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 2. 株価履歴テーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS price_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                date DATE NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume INTEGER,
+                UNIQUE(ticker, date),
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_price_ticker_date ON price_history(ticker, date)')
+
+        # 3. 四半期損益計算書テーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS income_statements_quarterly (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                date DATE NOT NULL,
+                fiscal_year INTEGER,
+                fiscal_quarter INTEGER,
+                revenue REAL,
+                net_income REAL,
+                eps REAL,
+                eps_diluted REAL,
+                UNIQUE(ticker, date),
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_income_q_ticker_date ON income_statements_quarterly(ticker, date)')
+
+        # 4. 年次損益計算書テーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS income_statements_annual (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                date DATE NOT NULL,
+                fiscal_year INTEGER,
+                revenue REAL,
+                net_income REAL,
+                eps REAL,
+                eps_diluted REAL,
+                UNIQUE(ticker, date),
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_income_a_ticker_date ON income_statements_annual(ticker, date)')
+
+        # 5. 企業プロファイルテーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS company_profiles (
+                ticker TEXT PRIMARY KEY,
+                company_name TEXT,
+                sector TEXT,
+                industry TEXT,
+                market_cap REAL,
+                description TEXT,
+                ceo TEXT,
+                website TEXT,
+                country TEXT,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+
+        # 6. 計算済みRS値テーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS calculated_rs (
+                ticker TEXT PRIMARY KEY,
+                rs_value REAL,
+                roc_63d REAL,
+                roc_126d REAL,
+                roc_189d REAL,
+                roc_252d REAL,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+
+        # 7. 計算済みEPS要素テーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS calculated_eps (
+                ticker TEXT PRIMARY KEY,
+                eps_growth_last_qtr REAL,
+                eps_growth_prev_qtr REAL,
+                annual_growth_rate REAL,
+                stability_score REAL,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+
+        # 8. 最終レーティングテーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS calculated_ratings (
+                ticker TEXT PRIMARY KEY,
+                rs_rating REAL,
+                eps_rating REAL,
+                ad_rating TEXT,
+                comp_rating REAL,
+                price_vs_52w_high REAL,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+
+        self.conn.commit()
+        print(f"データベースを初期化しました: {self.db_path}")
+
+    def close(self):
+        """データベース接続を閉じる"""
+        if self.conn:
+            self.conn.close()
+
+    # ==================== ティッカーマスター ====================
+
+    def insert_ticker(self, ticker: str, exchange: str = None, name: str = None):
+        """ティッカーをマスターテーブルに追加"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO tickers (ticker, exchange, name)
+            VALUES (?, ?, ?)
+        ''', (ticker, exchange, name))
+        self.conn.commit()
+
+    def insert_tickers_bulk(self, tickers_data: List[Dict]):
+        """ティッカーを一括追加"""
+        cursor = self.conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO tickers (ticker, exchange, name)
+            VALUES (:ticker, :exchange, :name)
+        ''', tickers_data)
+        self.conn.commit()
+
+    def get_all_tickers(self) -> List[str]:
+        """全ティッカーを取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT ticker FROM tickers ORDER BY ticker')
+        return [row[0] for row in cursor.fetchall()]
+
+    # ==================== 株価履歴 ====================
+
+    def insert_price_history(self, ticker: str, prices_df: pd.DataFrame):
+        """株価履歴を挿入（DataFrameから）"""
+        if prices_df is None or len(prices_df) == 0:
+            return
+
+        # DataFrameをSQLiteに挿入
+        records = []
+        for _, row in prices_df.iterrows():
+            records.append({
+                'ticker': ticker,
+                'date': row['date'].strftime('%Y-%m-%d') if isinstance(row['date'], pd.Timestamp) else row['date'],
+                'open': row.get('open'),
+                'high': row.get('high'),
+                'low': row.get('low'),
+                'close': row.get('close'),
+                'volume': row.get('volume')
+            })
+
+        cursor = self.conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO price_history (ticker, date, open, high, low, close, volume)
+            VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
+        ''', records)
+        self.conn.commit()
+
+    def get_price_history(self, ticker: str, days: int = 300) -> Optional[pd.DataFrame]:
+        """株価履歴を取得"""
+        query = '''
+            SELECT date, open, high, low, close, volume
+            FROM price_history
+            WHERE ticker = ?
+            ORDER BY date DESC
+            LIMIT ?
+        '''
+        df = pd.read_sql_query(query, self.conn, params=(ticker, days))
+
+        if len(df) > 0:
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date').reset_index(drop=True)
+            return df
+        return None
+
+    def has_price_data(self, ticker: str, min_days: int = 252) -> bool:
+        """指定された日数以上の株価データが存在するかチェック"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM price_history WHERE ticker = ?
+        ''', (ticker,))
+        count = cursor.fetchone()[0]
+        return count >= min_days
+
+    # ==================== 損益計算書 ====================
+
+    def insert_income_statements_quarterly(self, ticker: str, statements: List[Dict]):
+        """四半期損益計算書を挿入"""
+        if not statements:
+            return
+
+        records = []
+        for stmt in statements:
+            records.append({
+                'ticker': ticker,
+                'date': stmt.get('date'),
+                'fiscal_year': stmt.get('calendarYear'),
+                'fiscal_quarter': stmt.get('period', '').replace('Q', '') if 'Q' in str(stmt.get('period', '')) else None,
+                'revenue': stmt.get('revenue'),
+                'net_income': stmt.get('netIncome'),
+                'eps': stmt.get('eps'),
+                'eps_diluted': stmt.get('epsdiluted')
+            })
+
+        cursor = self.conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO income_statements_quarterly
+            (ticker, date, fiscal_year, fiscal_quarter, revenue, net_income, eps, eps_diluted)
+            VALUES (:ticker, :date, :fiscal_year, :fiscal_quarter, :revenue, :net_income, :eps, :eps_diluted)
+        ''', records)
+        self.conn.commit()
+
+    def insert_income_statements_annual(self, ticker: str, statements: List[Dict]):
+        """年次損益計算書を挿入"""
+        if not statements:
+            return
+
+        records = []
+        for stmt in statements:
+            records.append({
+                'ticker': ticker,
+                'date': stmt.get('date'),
+                'fiscal_year': stmt.get('calendarYear'),
+                'revenue': stmt.get('revenue'),
+                'net_income': stmt.get('netIncome'),
+                'eps': stmt.get('eps'),
+                'eps_diluted': stmt.get('epsdiluted')
+            })
+
+        cursor = self.conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO income_statements_annual
+            (ticker, date, fiscal_year, revenue, net_income, eps, eps_diluted)
+            VALUES (:ticker, :date, :fiscal_year, :revenue, :net_income, :eps, :eps_diluted)
+        ''', records)
+        self.conn.commit()
+
+    def get_income_statements_quarterly(self, ticker: str, limit: int = 8) -> List[Dict]:
+        """四半期損益計算書を取得"""
+        query = '''
+            SELECT date, fiscal_year, fiscal_quarter, revenue, net_income, eps, eps_diluted
+            FROM income_statements_quarterly
+            WHERE ticker = ?
+            ORDER BY date DESC
+            LIMIT ?
+        '''
+        cursor = self.conn.cursor()
+        cursor.execute(query, (ticker, limit))
+        rows = cursor.fetchall()
+
+        return [dict(row) for row in rows]
+
+    def get_income_statements_annual(self, ticker: str, limit: int = 5) -> List[Dict]:
+        """年次損益計算書を取得"""
+        query = '''
+            SELECT date, fiscal_year, revenue, net_income, eps, eps_diluted
+            FROM income_statements_annual
+            WHERE ticker = ?
+            ORDER BY date DESC
+            LIMIT ?
+        '''
+        cursor = self.conn.cursor()
+        cursor.execute(query, (ticker, limit))
+        rows = cursor.fetchall()
+
+        return [dict(row) for row in rows]
+
+    def has_income_data(self, ticker: str, min_quarters: int = 5) -> bool:
+        """指定された四半期数以上の損益計算書データが存在するかチェック"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM income_statements_quarterly WHERE ticker = ?
+        ''', (ticker,))
+        count = cursor.fetchone()[0]
+        return count >= min_quarters
+
+    # ==================== 企業プロファイル ====================
+
+    def insert_company_profile(self, ticker: str, profile: Dict):
+        """企業プロファイルを挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO company_profiles
+            (ticker, company_name, sector, industry, market_cap, description, ceo, website, country, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (
+            ticker,
+            profile.get('companyName'),
+            profile.get('sector'),
+            profile.get('industry'),
+            profile.get('mktCap'),
+            profile.get('description'),
+            profile.get('ceo'),
+            profile.get('website'),
+            profile.get('country')
+        ))
+        self.conn.commit()
+
+    def get_company_profile(self, ticker: str) -> Optional[Dict]:
+        """企業プロファイルを取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM company_profiles WHERE ticker = ?', (ticker,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    # ==================== 計算済みRS値 ====================
+
+    def insert_calculated_rs(self, ticker: str, rs_value: float, roc_63d: float, roc_126d: float, roc_189d: float, roc_252d: float):
+        """計算済みRS値を挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO calculated_rs
+            (ticker, rs_value, roc_63d, roc_126d, roc_189d, roc_252d, calculated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, rs_value, roc_63d, roc_126d, roc_189d, roc_252d))
+        self.conn.commit()
+
+    def get_all_rs_values(self) -> Dict[str, float]:
+        """全銘柄のRS値を取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT ticker, rs_value FROM calculated_rs WHERE rs_value IS NOT NULL')
+        return {row[0]: row[1] for row in cursor.fetchall()}
+
+    # ==================== 計算済みEPS要素 ====================
+
+    def insert_calculated_eps(self, ticker: str, eps_growth_last_qtr: float, eps_growth_prev_qtr: float,
+                             annual_growth_rate: float, stability_score: float):
+        """計算済みEPS要素を挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO calculated_eps
+            (ticker, eps_growth_last_qtr, eps_growth_prev_qtr, annual_growth_rate, stability_score, calculated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, eps_growth_last_qtr, eps_growth_prev_qtr, annual_growth_rate, stability_score))
+        self.conn.commit()
+
+    def get_all_eps_components(self) -> Dict[str, Dict]:
+        """全銘柄のEPS要素を取得"""
+        query = '''
+            SELECT ticker, eps_growth_last_qtr, eps_growth_prev_qtr, annual_growth_rate, stability_score
+            FROM calculated_eps
+        '''
+        cursor = self.conn.cursor()
+        cursor.execute(query)
+
+        result = {}
+        for row in cursor.fetchall():
+            result[row[0]] = {
+                'eps_growth_last_qtr': row[1],
+                'eps_growth_prev_qtr': row[2],
+                'annual_growth_rate': row[3],
+                'stability_score': row[4]
+            }
+        return result
+
+    # ==================== 最終レーティング ====================
+
+    def insert_calculated_rating(self, ticker: str, rs_rating: float, eps_rating: float,
+                                 ad_rating: str, comp_rating: float, price_vs_52w_high: float):
+        """最終レーティングを挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO calculated_ratings
+            (ticker, rs_rating, eps_rating, ad_rating, comp_rating, price_vs_52w_high, calculated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, rs_rating, eps_rating, ad_rating, comp_rating, price_vs_52w_high))
+        self.conn.commit()
+
+    def get_all_ratings(self) -> Dict[str, Dict]:
+        """全銘柄のレーティングを取得"""
+        query = '''
+            SELECT ticker, rs_rating, eps_rating, ad_rating, comp_rating, price_vs_52w_high
+            FROM calculated_ratings
+        '''
+        cursor = self.conn.cursor()
+        cursor.execute(query)
+
+        result = {}
+        for row in cursor.fetchall():
+            result[row[0]] = {
+                'rs_rating': row[1],
+                'eps_rating': row[2],
+                'ad_rating': row[3],
+                'comp_rating': row[4],
+                'price_vs_52w_high': row[5]
+            }
+        return result
+
+    def get_rating(self, ticker: str) -> Optional[Dict]:
+        """特定銘柄のレーティングを取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM calculated_ratings WHERE ticker = ?', (ticker,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    # ==================== ユーティリティ ====================
+
+    def clear_all_data(self):
+        """全データをクリア（テスト用）"""
+        cursor = self.conn.cursor()
+        tables = [
+            'calculated_ratings', 'calculated_eps', 'calculated_rs',
+            'company_profiles', 'income_statements_annual', 'income_statements_quarterly',
+            'price_history', 'tickers'
+        ]
+        for table in tables:
+            cursor.execute(f'DELETE FROM {table}')
+        self.conn.commit()
+        print("全データをクリアしました")
+
+    def get_database_stats(self):
+        """データベースの統計情報を表示"""
+        cursor = self.conn.cursor()
+
+        stats = {}
+        tables = [
+            'tickers', 'price_history', 'income_statements_quarterly',
+            'income_statements_annual', 'company_profiles', 'calculated_rs',
+            'calculated_eps', 'calculated_ratings'
+        ]
+
+        for table in tables:
+            cursor.execute(f'SELECT COUNT(*) FROM {table}')
+            count = cursor.fetchone()[0]
+            stats[table] = count
+
+        print("\n=== データベース統計 ===")
+        for table, count in stats.items():
+            print(f"  {table}: {count:,} レコード")
+
+        return stats

@@ -144,3 +144,8 @@ data/
 # Google Sheets credentials
 credentials.json
 *-credentials.json
+
+# IBD Screeners Database
+ibd_data.db
+*.db
+*.db-journal
