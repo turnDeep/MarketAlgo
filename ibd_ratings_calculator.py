@@ -201,6 +201,221 @@ class IBDRatingsCalculator:
 
         return eps_ratings_dict
 
+    # ==================== SMR Rating計算 ====================
+
+    def calculate_smr_components(self, ticker: str) -> Optional[Dict]:
+        """
+        SMR Ratingの構成要素を計算
+
+        IBD SMR Ratingの構成要素:
+        1. Sales growth (過去3四半期の売上成長率、前年同期比)
+        2. Pre-tax profit margins (税引前利益率、年次)
+        3. After-tax profit margins (税引後利益率、四半期)
+        4. ROE (Return on Equity、年次)
+
+        Args:
+            ticker: ティッカーシンボル
+
+        Returns:
+            dict: SMR構成要素の辞書、またはNone
+        """
+        try:
+            # 四半期損益計算書を取得（最低8四半期必要）
+            income_quarterly = self.db.get_income_statements_quarterly(ticker, limit=8)
+            if not income_quarterly or len(income_quarterly) < 8:
+                return None
+
+            # 年次損益計算書を取得
+            income_annual = self.db.get_income_statements_annual(ticker, limit=2)
+            if not income_annual or len(income_annual) < 1:
+                return None
+
+            result = {}
+
+            # 1. Sales growth (過去3四半期の前年同期比成長率)
+            sales_growth_rates = []
+            for i in range(3):
+                current_revenue = income_quarterly[i].get('revenue', 0)
+                yoy_revenue = income_quarterly[i + 4].get('revenue', 0) if len(income_quarterly) > i + 4 else 0
+
+                if yoy_revenue and yoy_revenue > 0 and current_revenue:
+                    growth_rate = ((current_revenue - yoy_revenue) / yoy_revenue) * 100
+                    sales_growth_rates.append(growth_rate)
+                    result[f'sales_growth_q{i+1}'] = growth_rate
+                else:
+                    result[f'sales_growth_q{i+1}'] = None
+
+            # 平均売上成長率（過去3四半期）
+            if sales_growth_rates:
+                result['avg_sales_growth_3q'] = np.mean(sales_growth_rates)
+            else:
+                result['avg_sales_growth_3q'] = None
+
+            # 2. Pre-tax profit margins (年次)
+            # FMP APIでは incomeBeforeTax を使用
+            # 注: データベースに保存されていない場合があるため、計算できない可能性がある
+            # この実装では、netIncomeとtaxから逆算するか、margin計算を省略
+            latest_annual = income_annual[0]
+            revenue_annual = latest_annual.get('revenue', 0)
+            net_income_annual = latest_annual.get('net_income', 0)
+
+            # Pre-tax marginの近似値として、net margin * 1.25 を使用（税率20%想定）
+            if revenue_annual and revenue_annual > 0 and net_income_annual:
+                aftertax_margin_annual = (net_income_annual / revenue_annual) * 100
+                # 簡易的にpre-tax marginを推定（税率を20-25%と仮定）
+                pretax_margin_annual = aftertax_margin_annual * 1.25
+                result['pretax_margin_annual'] = pretax_margin_annual
+            else:
+                result['pretax_margin_annual'] = None
+
+            # 3. After-tax profit margins (四半期)
+            latest_quarterly = income_quarterly[0]
+            revenue_quarterly = latest_quarterly.get('revenue', 0)
+            net_income_quarterly = latest_quarterly.get('net_income', 0)
+
+            if revenue_quarterly and revenue_quarterly > 0 and net_income_quarterly:
+                aftertax_margin_quarterly = (net_income_quarterly / revenue_quarterly) * 100
+                result['aftertax_margin_quarterly'] = aftertax_margin_quarterly
+            else:
+                result['aftertax_margin_quarterly'] = None
+
+            # 4. ROE (Return on Equity、年次)
+            # ROE = Net Income / Stockholders' Equity
+            # 注: Balance Sheetデータが必要だが、現在データベースに保存されていない
+            # この実装では、ROE計算をスキップするか、別途Balance Sheetデータを取得する必要がある
+            # 簡易的に、業界平均ROE 15%を仮定するか、計算を省略
+            result['roe_annual'] = None  # Balance Sheetデータが必要
+
+            return result
+
+        except Exception as e:
+            return None
+
+    def calculate_smr_ratings(self) -> Dict[str, str]:
+        """
+        全銘柄のSMR Ratingを計算（パーセンタイルランキング方式）
+
+        1. データベースから全銘柄のSMR要素を取得
+        2. 各要素を個別にパーセンタイルランキング（0-100）に変換
+        3. 重み付けして最終SMRスコアを計算
+        4. A (Top 20%) ～ E (Bottom 20%) のレーティングに変換
+
+        重み付け（推定）:
+        - Sales growth (3Q avg): 40%
+        - Pre-tax profit margins: 20%
+        - After-tax profit margins: 20%
+        - ROE: 20%
+
+        Returns:
+            dict: {ticker: smr_rating} の辞書 (A-E)
+        """
+        print("\n全銘柄のSMR Ratingを計算中...")
+
+        # 1. 全銘柄のSMR要素を取得（データベースから既に計算済みの場合）
+        smr_components_dict = self.db.get_all_smr_components()
+
+        if not smr_components_dict:
+            print("  SMR要素が計算されていません。先にSMR要素を計算してください。")
+            return {}
+
+        print(f"  {len(smr_components_dict)} 銘柄のSMR要素を取得")
+
+        # 2. 各要素を個別に抽出
+        avg_sales_growth_dict = {}
+        pretax_margin_dict = {}
+        aftertax_margin_dict = {}
+        roe_dict = {}
+
+        for ticker, components in smr_components_dict.items():
+            if components['avg_sales_growth_3q'] is not None:
+                avg_sales_growth_dict[ticker] = components['avg_sales_growth_3q']
+            if components['pretax_margin_annual'] is not None:
+                pretax_margin_dict[ticker] = components['pretax_margin_annual']
+            if components['aftertax_margin_quarterly'] is not None:
+                aftertax_margin_dict[ticker] = components['aftertax_margin_quarterly']
+            if components['roe_annual'] is not None:
+                roe_dict[ticker] = components['roe_annual']
+
+        print(f"    平均売上成長率: {len(avg_sales_growth_dict)} 銘柄")
+        print(f"    税引前利益率: {len(pretax_margin_dict)} 銘柄")
+        print(f"    税引後利益率: {len(aftertax_margin_dict)} 銘柄")
+        print(f"    ROE: {len(roe_dict)} 銘柄")
+
+        # 3. 各要素を個別にパーセンタイルランキングに変換
+        print("  各要素をパーセンタイルランキングに変換中...")
+
+        percentile_sales_growth = self.calculate_percentile_ranking(avg_sales_growth_dict)
+        percentile_pretax_margin = self.calculate_percentile_ranking(pretax_margin_dict)
+        percentile_aftertax_margin = self.calculate_percentile_ranking(aftertax_margin_dict)
+        percentile_roe = self.calculate_percentile_ranking(roe_dict)
+
+        # 4. 重み付けして最終SMRスコアを計算
+        print("  重み付けして最終SMRスコアを計算中...")
+
+        # IBDの重み付け（推定）:
+        weights = {
+            'sales_growth': 0.40,
+            'pretax_margin': 0.20,
+            'aftertax_margin': 0.20,
+            'roe': 0.20
+        }
+
+        smr_scores_dict = {}
+
+        # 全ティッカーのユニオンを取得
+        all_tickers = set()
+        all_tickers.update(percentile_sales_growth.keys())
+        all_tickers.update(percentile_pretax_margin.keys())
+        all_tickers.update(percentile_aftertax_margin.keys())
+        all_tickers.update(percentile_roe.keys())
+
+        for ticker in all_tickers:
+            total_score = 0
+            total_weight = 0
+
+            # Sales growth (40%)
+            if ticker in percentile_sales_growth:
+                total_score += percentile_sales_growth[ticker] * weights['sales_growth']
+                total_weight += weights['sales_growth']
+
+            # Pre-tax margin (20%)
+            if ticker in percentile_pretax_margin:
+                total_score += percentile_pretax_margin[ticker] * weights['pretax_margin']
+                total_weight += weights['pretax_margin']
+
+            # After-tax margin (20%)
+            if ticker in percentile_aftertax_margin:
+                total_score += percentile_aftertax_margin[ticker] * weights['aftertax_margin']
+                total_weight += weights['aftertax_margin']
+
+            # ROE (20%)
+            if ticker in percentile_roe:
+                total_score += percentile_roe[ticker] * weights['roe']
+                total_weight += weights['roe']
+
+            # 重み付けを正規化
+            if total_weight > 0:
+                smr_score = total_score / total_weight
+                smr_scores_dict[ticker] = round(smr_score, 2)
+
+        # 5. スコアをA-Eのレーティングに変換
+        smr_ratings_dict = {}
+        for ticker, score in smr_scores_dict.items():
+            if score >= 80:
+                smr_ratings_dict[ticker] = 'A'  # Top 20%
+            elif score >= 60:
+                smr_ratings_dict[ticker] = 'B'  # Next 20%
+            elif score >= 40:
+                smr_ratings_dict[ticker] = 'C'  # Middle 20%
+            elif score >= 20:
+                smr_ratings_dict[ticker] = 'D'  # Next 20%
+            else:
+                smr_ratings_dict[ticker] = 'E'  # Bottom 20%
+
+        print(f"  {len(smr_ratings_dict)} 銘柄のSMR Ratingを計算")
+
+        return smr_ratings_dict
+
     # ==================== A/D Rating計算 ====================
 
     def calculate_ad_rating(self, ticker: str) -> Optional[str]:
@@ -311,7 +526,8 @@ class IBDRatingsCalculator:
     # ==================== Composite Rating計算 ====================
 
     def calculate_comp_rating(self, rs_rating: float, eps_rating: float, ad_rating: str,
-                             price_vs_52w_high: float) -> Optional[float]:
+                             price_vs_52w_high: float, smr_rating: str = None,
+                             industry_group_rs: float = None) -> Optional[float]:
         """
         Composite Rating を計算
 
@@ -319,15 +535,17 @@ class IBDRatingsCalculator:
         - RS Rating: 30% (ダブルウェイト)
         - EPS Rating: 30% (ダブルウェイト)
         - A/D Rating: 15%
-        - 52週高値からの距離: 5%
+        - SMR Rating: 10%
         - Industry Group RS: 10% (未実装)
-        - SMR Rating: 10% (未実装)
+        - 52週高値からの距離: 5%
 
         Args:
             rs_rating: RS Rating (0-100)
             eps_rating: EPS Rating (0-100)
             ad_rating: A/D Rating (A-E)
             price_vs_52w_high: 52週高値からの距離 (%)
+            smr_rating: SMR Rating (A-E、オプション)
+            industry_group_rs: Industry Group RS (0-100、オプション)
 
         Returns:
             float: Composite Rating (0-100)
@@ -358,7 +576,24 @@ class IBDRatingsCalculator:
                 score += ad_score_map[ad_rating] * 0.15
                 weight_sum += 0.15
 
-            # 4. 52週高値からの距離 (5%)
+            # 4. SMR Rating (10%)
+            smr_score_map = {
+                'A': 100,  # Top 20%
+                'B': 75,   # Next 20%
+                'C': 50,   # Middle 20%
+                'D': 25,   # Next 20%
+                'E': 0     # Bottom 20%
+            }
+            if smr_rating and smr_rating in smr_score_map:
+                score += smr_score_map[smr_rating] * 0.10
+                weight_sum += 0.10
+
+            # 5. Industry Group RS (10% - オプション)
+            if industry_group_rs is not None:
+                score += industry_group_rs * 0.10
+                weight_sum += 0.10
+
+            # 6. 52週高値からの距離 (5%)
             if price_vs_52w_high is not None:
                 if price_vs_52w_high >= -5:
                     high_score = 100
@@ -388,8 +623,10 @@ class IBDRatingsCalculator:
 
         1. RS Ratingを計算
         2. EPS Ratingを計算（パーセンタイルランキング方式）
-        3. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
-        4. データベースに保存
+        3. SMR要素を計算してデータベースに保存
+        4. SMR Ratingを計算（パーセンタイルランキング方式）
+        5. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
+        6. データベースに保存
         """
         print(f"\n{'='*80}")
         print("全レーティング計算開始")
@@ -401,11 +638,41 @@ class IBDRatingsCalculator:
         # 2. EPS Ratingを計算（パーセンタイルランキング方式）
         eps_ratings_dict = self.calculate_eps_ratings()
 
-        # 3. 全銘柄のティッカーリストを取得
+        # 3. SMR要素を計算してデータベースに保存
+        print(f"\n全銘柄のSMR要素を計算中...")
         all_tickers = self.db.get_all_tickers()
+        smr_calculated_count = 0
+
+        for idx, ticker in enumerate(all_tickers):
+            if (idx + 1) % 500 == 0:
+                print(f"  進捗: {idx + 1}/{len(all_tickers)} 銘柄")
+
+            try:
+                smr_components = self.calculate_smr_components(ticker)
+                if smr_components:
+                    self.db.insert_calculated_smr(
+                        ticker,
+                        smr_components.get('sales_growth_q1'),
+                        smr_components.get('sales_growth_q2'),
+                        smr_components.get('sales_growth_q3'),
+                        smr_components.get('avg_sales_growth_3q'),
+                        smr_components.get('pretax_margin_annual'),
+                        smr_components.get('aftertax_margin_quarterly'),
+                        smr_components.get('roe_annual')
+                    )
+                    smr_calculated_count += 1
+            except Exception as e:
+                continue
+
+        print(f"  {smr_calculated_count} 銘柄のSMR要素を計算・保存しました")
+
+        # 4. SMR Ratingを計算（パーセンタイルランキング方式）
+        smr_ratings_dict = self.calculate_smr_ratings()
+
+        # 5. 全銘柄のA/D RatingとComposite Ratingを計算
         print(f"\n全 {len(all_tickers)} 銘柄のA/D RatingとComposite Ratingを計算中...")
 
-        # 4. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
+        # 6. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
         calculated_count = 0
         for idx, ticker in enumerate(all_tickers):
             if (idx + 1) % 500 == 0:
@@ -422,11 +689,16 @@ class IBDRatingsCalculator:
                 # A/D Ratingを計算
                 ad_rating = self.calculate_ad_rating(ticker)
 
+                # SMR Ratingを取得
+                smr_rating = smr_ratings_dict.get(ticker)
+
                 # 52週高値からの距離を計算
                 price_vs_52w_high = self.calculate_52w_high_distance(ticker)
 
                 # Composite Ratingを計算
-                comp_rating = self.calculate_comp_rating(rs_rating, eps_rating, ad_rating, price_vs_52w_high)
+                comp_rating = self.calculate_comp_rating(
+                    rs_rating, eps_rating, ad_rating, price_vs_52w_high, smr_rating
+                )
 
                 # データベースに保存
                 self.db.insert_calculated_rating(
@@ -435,7 +707,8 @@ class IBDRatingsCalculator:
                     eps_rating,
                     ad_rating,
                     comp_rating,
-                    price_vs_52w_high
+                    price_vs_52w_high,
+                    smr_rating
                 )
 
                 calculated_count += 1
