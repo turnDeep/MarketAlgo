@@ -75,6 +75,13 @@ class IBDDataCollector:
         data = self.fetch_with_rate_limit(url, params)
         return data if data else None
 
+    def get_balance_sheet(self, symbol: str, period: str = 'annual', limit: int = 5) -> Optional[List[Dict]]:
+        """貸借対照表を取得"""
+        url = f"{self.base_url}/balance-sheet-statement/{symbol}"
+        params = {'period': period, 'limit': limit}
+        data = self.fetch_with_rate_limit(url, params)
+        return data if data else None
+
     def get_company_profile(self, symbol: str) -> Optional[Dict]:
         """企業プロファイルを取得"""
         url = f"{self.base_url}/profile/{symbol}"
@@ -127,7 +134,12 @@ class IBDDataCollector:
             if income_a:
                 db_conn.insert_income_statements_annual(ticker, income_a)
 
-            # 4. 企業プロファイル取得
+            # 4. 年次貸借対照表取得 (Balance Sheet for ROE calculation)
+            balance_sheet = self.get_balance_sheet(ticker, period='annual', limit=5)
+            if balance_sheet:
+                db_conn.insert_balance_sheet_annual(ticker, balance_sheet)
+
+            # 5. 企業プロファイル取得
             profile = self.get_company_profile(ticker)
             if profile:
                 db_conn.insert_company_profile(ticker, profile)
