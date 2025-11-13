@@ -111,6 +111,19 @@ class IBDDataCollector:
             return data[0]
         return None
 
+    def get_historical_sector_performance(self, limit: int = 300) -> Optional[List[Dict]]:
+        """履歴セクターパフォーマンスを取得"""
+        url = f"{self.base_url}/historical-sectors-performance"
+        params = {'limit': limit}
+        data = self.fetch_with_rate_limit(url, params)
+        return data if data else None
+
+    def get_current_sector_performance(self) -> Optional[List[Dict]]:
+        """現在のセクターパフォーマンスを取得"""
+        url = f"{self.base_url}/sectors-performance"
+        data = self.fetch_with_rate_limit(url)
+        return data if data else None
+
     # ==================== データ収集（単一銘柄） ====================
 
     def collect_ticker_data(self, ticker: str) -> bool:
@@ -412,6 +425,59 @@ class IBDDataCollector:
         except Exception as e:
             return None
 
+    # ==================== セクターパフォーマンスデータ収集 ====================
+
+    def collect_sector_performance_data(self, limit: int = 300):
+        """
+        セクターパフォーマンスデータを収集してDBに保存
+
+        Args:
+            limit: 取得する履歴データの件数
+        """
+        print(f"\nセクターパフォーマンスデータを収集中...")
+
+        # 履歴セクターパフォーマンスを取得
+        historical_data = self.get_historical_sector_performance(limit=limit)
+
+        if not historical_data:
+            print("  セクターパフォーマンスデータの取得に失敗しました")
+            return
+
+        print(f"  {len(historical_data)} 件の履歴データを取得")
+
+        # データを変換してDBに保存
+        records = []
+        for entry in historical_data:
+            date = entry.get('date')
+            if not date:
+                continue
+
+            # 各セクターのパフォーマンスを抽出
+            for key, value in entry.items():
+                if key != 'date' and value is not None:
+                    # セクター名を正規化（例: "Communication Services" など）
+                    sector_name = key.replace('ChangesPercentage', '').strip()
+                    records.append({
+                        'sector': sector_name,
+                        'date': date,
+                        'change_percentage': float(value) if isinstance(value, (int, float, str)) else None
+                    })
+
+        if records:
+            # 重複を除去してDBに挿入
+            unique_records = []
+            seen = set()
+            for record in records:
+                key = (record['sector'], record['date'])
+                if key not in seen and record['change_percentage'] is not None:
+                    seen.add(key)
+                    unique_records.append(record)
+
+            self.db.insert_sector_performance_bulk(unique_records)
+            print(f"  {len(unique_records)} 件のセクターパフォーマンスデータを保存しました")
+        else:
+            print("  保存するデータがありませんでした")
+
     # ==================== メインワークフロー ====================
 
     def run_full_collection(self, use_full_dataset: bool = True, max_workers: int = 10):
@@ -443,13 +509,16 @@ class IBDDataCollector:
         # 2. データ収集
         collected_tickers = self.collect_all_data(tickers_list, max_workers=max_workers)
 
-        # 3. RS値計算
+        # 3. セクターパフォーマンスデータ収集
+        self.collect_sector_performance_data(limit=300)
+
+        # 4. RS値計算
         self.calculate_and_store_rs_values(collected_tickers)
 
-        # 4. EPS要素計算
+        # 5. EPS要素計算
         self.calculate_and_store_eps_components(collected_tickers)
 
-        # 5. 統計表示
+        # 6. 統計表示
         self.db.get_database_stats()
 
         print(f"\n{'='*80}")

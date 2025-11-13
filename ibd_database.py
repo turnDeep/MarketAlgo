@@ -166,6 +166,33 @@ class IBDDatabase:
                 smr_rating TEXT,
                 comp_rating REAL,
                 price_vs_52w_high REAL,
+                industry_group_rs REAL,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+
+        # 10. セクターパフォーマンステーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sector_performance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sector TEXT NOT NULL,
+                date DATE NOT NULL,
+                change_percentage REAL,
+                UNIQUE(sector, date)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sector_perf_date ON sector_performance(sector, date)')
+
+        # 11. Industry Group RSテーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS calculated_industry_group_rs (
+                ticker TEXT PRIMARY KEY,
+                sector TEXT,
+                industry TEXT,
+                stock_rs_value REAL,
+                sector_rs_value REAL,
+                industry_group_rs_value REAL,
                 calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (ticker) REFERENCES tickers(ticker)
             )
@@ -473,14 +500,14 @@ class IBDDatabase:
 
     def insert_calculated_rating(self, ticker: str, rs_rating: float, eps_rating: float,
                                  ad_rating: str, comp_rating: float, price_vs_52w_high: float,
-                                 smr_rating: str = None):
+                                 smr_rating: str = None, industry_group_rs: float = None):
         """最終レーティングを挿入"""
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO calculated_ratings
-            (ticker, rs_rating, eps_rating, ad_rating, smr_rating, comp_rating, price_vs_52w_high, calculated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (ticker, rs_rating, eps_rating, ad_rating, smr_rating, comp_rating, price_vs_52w_high))
+            (ticker, rs_rating, eps_rating, ad_rating, smr_rating, comp_rating, price_vs_52w_high, industry_group_rs, calculated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, rs_rating, eps_rating, ad_rating, smr_rating, comp_rating, price_vs_52w_high, industry_group_rs))
         self.conn.commit()
 
     def get_all_ratings(self) -> Dict[str, Dict]:
@@ -511,6 +538,76 @@ class IBDDatabase:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    # ==================== セクターパフォーマンス ====================
+
+    def insert_sector_performance(self, sector: str, date: str, change_percentage: float):
+        """セクターパフォーマンスデータを挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO sector_performance (sector, date, change_percentage)
+            VALUES (?, ?, ?)
+        ''', (sector, date, change_percentage))
+        self.conn.commit()
+
+    def insert_sector_performance_bulk(self, data: List[Dict]):
+        """セクターパフォーマンスデータを一括挿入"""
+        cursor = self.conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO sector_performance (sector, date, change_percentage)
+            VALUES (:sector, :date, :change_percentage)
+        ''', data)
+        self.conn.commit()
+
+    def get_sector_performance_history(self, sector: str, days: int = 300) -> Optional[pd.DataFrame]:
+        """特定セクターのパフォーマンス履歴を取得"""
+        query = '''
+            SELECT date, change_percentage
+            FROM sector_performance
+            WHERE sector = ?
+            ORDER BY date DESC
+            LIMIT ?
+        '''
+        df = pd.read_sql_query(query, self.conn, params=(sector, days))
+
+        if len(df) > 0:
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date').reset_index(drop=True)
+            return df
+        return None
+
+    def get_all_sectors(self) -> List[str]:
+        """データベース内の全セクターを取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT DISTINCT sector FROM sector_performance ORDER BY sector')
+        return [row[0] for row in cursor.fetchall() if row[0]]
+
+    # ==================== Industry Group RS ====================
+
+    def insert_industry_group_rs(self, ticker: str, sector: str, industry: str,
+                                 stock_rs_value: float, sector_rs_value: float,
+                                 industry_group_rs_value: float):
+        """Industry Group RSを挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO calculated_industry_group_rs
+            (ticker, sector, industry, stock_rs_value, sector_rs_value, industry_group_rs_value, calculated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, sector, industry, stock_rs_value, sector_rs_value, industry_group_rs_value))
+        self.conn.commit()
+
+    def get_all_industry_group_rs(self) -> Dict[str, float]:
+        """全銘柄のIndustry Group RS値を取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT ticker, industry_group_rs_value FROM calculated_industry_group_rs WHERE industry_group_rs_value IS NOT NULL')
+        return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def get_industry_group_rs(self, ticker: str) -> Optional[Dict]:
+        """特定銘柄のIndustry Group RSを取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM calculated_industry_group_rs WHERE ticker = ?', (ticker,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
     # ==================== ユーティリティ ====================
 
     def clear_all_data(self):
@@ -534,7 +631,8 @@ class IBDDatabase:
         tables = [
             'tickers', 'price_history', 'income_statements_quarterly',
             'income_statements_annual', 'company_profiles', 'calculated_rs',
-            'calculated_eps', 'calculated_smr', 'calculated_ratings'
+            'calculated_eps', 'calculated_smr', 'calculated_ratings',
+            'sector_performance', 'calculated_industry_group_rs'
         ]
 
         for table in tables:
