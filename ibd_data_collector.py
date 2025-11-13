@@ -8,6 +8,7 @@ SQLiteデータベースに保存します。
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import requests
 from curl_cffi.requests import Session
 import pandas as pd
 import numpy as np
@@ -20,77 +21,36 @@ from get_tickers import FMPTickerFetcher
 class IBDDataCollector:
     """IBDスクリーナー用のデータ収集クラス"""
 
-    def __init__(self, fmp_api_key: str, db_path: str = 'ibd_data.db'):
+    def __init__(self, fmp_api_key: str, db_path: str = 'ibd_data.db', debug: bool = False):
         """
         Args:
             fmp_api_key: Financial Modeling Prep API Key
             db_path: データベースファイルのパス
+            debug: デバッグモードを有効にする
         """
         self.fmp_api_key = fmp_api_key
         self.base_url = "https://financialmodelingprep.com/api/v3"
         self.rate_limiter = RateLimiter(max_calls_per_minute=750)
-        self.db = IBDDatabase(db_path)
-        # curl_cffiセッションを初期化（Bot検出を回避するため）
-        self.session = Session(impersonate="chrome110")
+        self.db_path = db_path
+        self.db = IBDDatabase(self.db_path, silent=False)
+        self.debug = debug
 
     def fetch_with_rate_limit(self, url: str, params: dict = None) -> Optional[dict]:
-        """レート制限を考慮したAPIリクエスト（curl_cffiを使用してBot検出を回避）"""
-        import time
+        """レート制限を考慮したAPIリクエスト"""
+        self.rate_limiter.wait_if_needed()
 
         if params is None:
             params = {}
         params['apikey'] = self.fmp_api_key
 
-        # リトライ設定
-        max_retries = 3
-        retry_delays = [60, 120, 240]  # 429エラー時の待機時間（秒）
-
-        for attempt in range(max_retries + 1):
-            self.rate_limiter.wait_if_needed()
-
-            try:
-                response = self.session.get(url, params=params, timeout=30)
-                response.raise_for_status()
-                return response.json()
-            except Exception as e:
-                status_code = None
-                if hasattr(e, 'response') and e.response is not None:
-                    status_code = getattr(e.response, 'status_code', None)
-
-                # HTTP 429 エラー（レート制限）の場合
-                if status_code == 429:
-                    if attempt < max_retries:
-                        wait_time = retry_delays[attempt]
-                        if not hasattr(self, '_rate_limit_warning_shown'):
-                            print(f"\n[レート制限警告] APIレート制限に達しました")
-                            print(f"  待機時間を増やしてリトライします")
-                            self._rate_limit_warning_shown = True
-
-                        print(f"  {wait_time}秒待機してリトライします... (試行 {attempt + 1}/{max_retries})")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        print(f"\n[エラー] 最大リトライ回数に達しました。レート制限を超過しています。")
-                        print(f"  APIプランのアップグレードを検討してください。")
-                        return None
-
-                # その他のエラー
-                if not hasattr(self, '_error_count'):
-                    self._error_count = 0
-
-                if self._error_count < 10:
-                    print(f"\n[API Error] URL: {url}")
-                    print(f"  Status: {status_code if status_code else 'N/A'}")
-                    print(f"  Error: {type(e).__name__}: {str(e)[:200]}")
-                    if hasattr(e, 'response') and e.response is not None:
-                        print(f"  Response: {e.response.text[:300]}")
-                    self._error_count += 1
-                    if self._error_count == 10:
-                        print("\n[以降のエラーメッセージは抑制されます]\n")
-
-                return None
-
-        return None
+        try:
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            if self.debug:  # デバッグモードの時だけエラー表示
+                print(f"    API Error: {url} - {str(e)}")
+            return None
 
     # ==================== データ取得メソッド ====================
 
@@ -139,64 +99,67 @@ class IBDDataCollector:
 
     # ==================== データ収集（単一銘柄） ====================
 
-    def collect_ticker_data(self, ticker: str) -> bool:
+    def collect_ticker_data(self, ticker: str, db_conn: IBDDatabase) -> bool:
         """
-        単一銘柄の全データを収集してDBに保存
-
-        Args:
-            ticker: ティッカーシンボル
-
-        Returns:
-            bool: 成功した場合True
+        単一銘柄の全データを収集してDBに保存（スレッドセーフ）
         """
         try:
             # 1. 株価データ取得
             prices_df = self.get_historical_prices(ticker, days=300)
             if prices_df is not None and len(prices_df) >= 252:
-                self.db.insert_price_history(ticker, prices_df)
+                db_conn.insert_price_history(ticker, prices_df)
             else:
-                # 最低252日のデータがない場合はスキップ
+                if self.debug:
+                    print(f"    {ticker}: 株価データ不足 (取得: {len(prices_df) if prices_df is not None else 0}日)")
                 return False
 
             # 2. 四半期損益計算書取得
             income_q = self.get_income_statement(ticker, period='quarter', limit=8)
             if income_q and len(income_q) >= 5:
-                self.db.insert_income_statements_quarterly(ticker, income_q)
+                db_conn.insert_income_statements_quarterly(ticker, income_q)
             else:
-                # 最低5四半期のデータがない場合はスキップ
+                if self.debug:
+                    print(f"    {ticker}: 四半期データ不足 (取得: {len(income_q) if income_q else 0}期)")
                 return False
 
             # 3. 年次損益計算書取得
             income_a = self.get_income_statement(ticker, period='annual', limit=5)
             if income_a:
-                self.db.insert_income_statements_annual(ticker, income_a)
+                db_conn.insert_income_statements_annual(ticker, income_a)
 
             # 4. 企業プロファイル取得
             profile = self.get_company_profile(ticker)
             if profile:
-                self.db.insert_company_profile(ticker, profile)
+                db_conn.insert_company_profile(ticker, profile)
 
             return True
 
         except Exception as e:
+            if self.debug:
+                print(f"    {ticker}: エラー - {str(e)}")
             return False
 
     # ==================== 並列データ収集 ====================
 
     def collect_batch(self, tickers_batch: List[str]) -> Dict:
-        """ティッカーのバッチを処理"""
+        """
+        ティッカーのバッチを処理（スレッドごとにDB接続）
+        """
+        db_conn = IBDDatabase(self.db_path, silent=True)
         results = {
             'success': 0,
             'failed': 0,
             'tickers_collected': []
         }
-
-        for ticker in tickers_batch:
-            if self.collect_ticker_data(ticker):
-                results['success'] += 1
-                results['tickers_collected'].append(ticker)
-            else:
-                results['failed'] += 1
+        try:
+            for ticker in tickers_batch:
+                if self.collect_ticker_data(ticker, db_conn):
+                    results['success'] += 1
+                    results['tickers_collected'].append(ticker)
+                else:
+                    results['failed'] += 1
+        finally:
+            db_conn.close()
 
         return results
 
@@ -542,9 +505,6 @@ class IBDDataCollector:
     def close(self):
         """リソースをクリーンアップ"""
         self.db.close()
-        # セッションをクローズ
-        if hasattr(self.session, 'close'):
-            self.session.close()
 
 
 def main():

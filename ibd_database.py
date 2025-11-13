@@ -13,16 +13,16 @@ import pandas as pd
 class IBDDatabase:
     """IBD スクリーナー用のSQLiteデータベース管理クラス"""
 
-    def __init__(self, db_path='ibd_data.db'):
+    def __init__(self, db_path='ibd_data.db', silent=False):
         """
         Args:
             db_path: データベースファイルのパス
         """
         self.db_path = db_path
         self.conn = None
-        self.initialize_database()
+        self.initialize_database(silent)
 
-    def initialize_database(self):
+    def initialize_database(self, silent=False):
         """データベースの初期化とテーブル作成"""
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
@@ -196,7 +196,8 @@ class IBDDatabase:
         ''')
 
         self.conn.commit()
-        print(f"データベースを初期化しました: {self.db_path}")
+        if not silent:
+            print(f"データベースを初期化しました: {self.db_path}")
 
     def close(self):
         """データベース接続を閉じる"""
