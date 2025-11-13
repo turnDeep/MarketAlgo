@@ -46,7 +46,20 @@ class IBDDataCollector:
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            # エラーメッセージを抑制（大量の出力を避ける）
+            # デバッグ用にエラーを記録（最初の10件のみ表示）
+            if not hasattr(self, '_error_count'):
+                self._error_count = 0
+
+            if self._error_count < 10:
+                print(f"\n[API Error] URL: {url}")
+                print(f"  Status: {getattr(e, 'response', None) and e.response.status_code if hasattr(e, 'response') else 'N/A'}")
+                print(f"  Error: {type(e).__name__}: {str(e)[:200]}")
+                if hasattr(e, 'response') and e.response is not None:
+                    print(f"  Response: {e.response.text[:300]}")
+                self._error_count += 1
+                if self._error_count == 10:
+                    print("\n[以降のエラーメッセージは抑制されます]\n")
+
             return None
 
     # ==================== データ取得メソッド ====================
