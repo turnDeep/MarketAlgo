@@ -140,13 +140,30 @@ class IBDDatabase:
             )
         ''')
 
-        # 8. 最終レーティングテーブル
+        # 8. 計算済みSMR要素テーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS calculated_smr (
+                ticker TEXT PRIMARY KEY,
+                sales_growth_q1 REAL,
+                sales_growth_q2 REAL,
+                sales_growth_q3 REAL,
+                avg_sales_growth_3q REAL,
+                pretax_margin_annual REAL,
+                aftertax_margin_quarterly REAL,
+                roe_annual REAL,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+
+        # 9. 最終レーティングテーブル
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS calculated_ratings (
                 ticker TEXT PRIMARY KEY,
                 rs_rating REAL,
                 eps_rating REAL,
                 ad_rating TEXT,
+                smr_rating TEXT,
                 comp_rating REAL,
                 price_vs_52w_high REAL,
                 calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -412,23 +429,64 @@ class IBDDatabase:
             }
         return result
 
+    # ==================== 計算済みSMR要素 ====================
+
+    def insert_calculated_smr(self, ticker: str, sales_growth_q1: float, sales_growth_q2: float,
+                             sales_growth_q3: float, avg_sales_growth_3q: float,
+                             pretax_margin_annual: float, aftertax_margin_quarterly: float,
+                             roe_annual: float):
+        """計算済みSMR要素を挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO calculated_smr
+            (ticker, sales_growth_q1, sales_growth_q2, sales_growth_q3, avg_sales_growth_3q,
+             pretax_margin_annual, aftertax_margin_quarterly, roe_annual, calculated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, sales_growth_q1, sales_growth_q2, sales_growth_q3, avg_sales_growth_3q,
+              pretax_margin_annual, aftertax_margin_quarterly, roe_annual))
+        self.conn.commit()
+
+    def get_all_smr_components(self) -> Dict[str, Dict]:
+        """全銘柄のSMR要素を取得"""
+        query = '''
+            SELECT ticker, sales_growth_q1, sales_growth_q2, sales_growth_q3, avg_sales_growth_3q,
+                   pretax_margin_annual, aftertax_margin_quarterly, roe_annual
+            FROM calculated_smr
+        '''
+        cursor = self.conn.cursor()
+        cursor.execute(query)
+
+        result = {}
+        for row in cursor.fetchall():
+            result[row[0]] = {
+                'sales_growth_q1': row[1],
+                'sales_growth_q2': row[2],
+                'sales_growth_q3': row[3],
+                'avg_sales_growth_3q': row[4],
+                'pretax_margin_annual': row[5],
+                'aftertax_margin_quarterly': row[6],
+                'roe_annual': row[7]
+            }
+        return result
+
     # ==================== 最終レーティング ====================
 
     def insert_calculated_rating(self, ticker: str, rs_rating: float, eps_rating: float,
-                                 ad_rating: str, comp_rating: float, price_vs_52w_high: float):
+                                 ad_rating: str, comp_rating: float, price_vs_52w_high: float,
+                                 smr_rating: str = None):
         """最終レーティングを挿入"""
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO calculated_ratings
-            (ticker, rs_rating, eps_rating, ad_rating, comp_rating, price_vs_52w_high, calculated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (ticker, rs_rating, eps_rating, ad_rating, comp_rating, price_vs_52w_high))
+            (ticker, rs_rating, eps_rating, ad_rating, smr_rating, comp_rating, price_vs_52w_high, calculated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, rs_rating, eps_rating, ad_rating, smr_rating, comp_rating, price_vs_52w_high))
         self.conn.commit()
 
     def get_all_ratings(self) -> Dict[str, Dict]:
         """全銘柄のレーティングを取得"""
         query = '''
-            SELECT ticker, rs_rating, eps_rating, ad_rating, comp_rating, price_vs_52w_high
+            SELECT ticker, rs_rating, eps_rating, ad_rating, smr_rating, comp_rating, price_vs_52w_high
             FROM calculated_ratings
         '''
         cursor = self.conn.cursor()
@@ -440,8 +498,9 @@ class IBDDatabase:
                 'rs_rating': row[1],
                 'eps_rating': row[2],
                 'ad_rating': row[3],
-                'comp_rating': row[4],
-                'price_vs_52w_high': row[5]
+                'smr_rating': row[4],
+                'comp_rating': row[5],
+                'price_vs_52w_high': row[6]
             }
         return result
 
@@ -475,7 +534,7 @@ class IBDDatabase:
         tables = [
             'tickers', 'price_history', 'income_statements_quarterly',
             'income_statements_annual', 'company_profiles', 'calculated_rs',
-            'calculated_eps', 'calculated_ratings'
+            'calculated_eps', 'calculated_smr', 'calculated_ratings'
         ]
 
         for table in tables:
