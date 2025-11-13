@@ -2,15 +2,12 @@
 IBD Database Manager
 
 SQLiteデータベースを使用して、株価、EPS、その他の財務データを集約・管理します。
-これにより、効率的なデータアクセスと再利用が可能になります。
 """
 
 import sqlite3
+from typing import List, Dict, Optional
+
 import pandas as pd
-import numpy as np
-from datetime import datetime
-from typing import List, Dict, Optional, Tuple
-import json
 
 
 class IBDDatabase:
