@@ -41,12 +41,30 @@ class IBDDataCollector:
             params = {}
         params['apikey'] = self.fmp_api_key
 
+        response = None
         try:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            # エラーメッセージを抑制（大量の出力を避ける）
+            # デバッグ用にエラー情報を表示（最初の5件のみ）
+            if not hasattr(self, '_error_count'):
+                self._error_count = 0
+
+            if self._error_count < 5:
+                print(f"  [DEBUG] API Error:")
+                print(f"    URL: {url}")
+                print(f"    Status: {response.status_code if response else 'No response'}")
+                print(f"    Error: {str(e)}")
+                if response:
+                    try:
+                        print(f"    Response: {response.text[:200]}")
+                    except:
+                        pass
+                self._error_count += 1
+                if self._error_count == 5:
+                    print("  [DEBUG] (More errors suppressed...)")
+
             return None
 
     # ==================== データ取得メソッド ====================

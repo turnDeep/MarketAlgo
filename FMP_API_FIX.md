@@ -2,7 +2,13 @@
 
 ## 問題の原因
 
-Financial Modeling Prep (FMP) API は Bot検出を行っており、標準の `requests` ライブラリからのリクエストを403エラー（Access Denied）でブロックしていました。
+Financial Modeling Prep (FMP) API でデータ取得に失敗していた原因は2つありました：
+
+### 1. Bot検出による403エラー
+FMP API は Bot検出を行っており、標準の `requests` ライブラリからのリクエストを403エラー（Access Denied）でブロックしていました。
+
+### 2. 無効なAPIキー
+`demo` APIキーは現在使用できなくなっています。有効なAPIキーが必要です。
 
 ### 症状
 - 全銘柄のデータ取得が失敗（成功: 0 銘柄）
@@ -43,14 +49,34 @@ pip install curl_cffi
 pip install -r requirements.txt
 ```
 
-### 2. APIキーの設定
-`.env` ファイルに有効なFMP APIキーを設定してください:
+### 2. APIキーの設定（重要！）
+
+**現在、APIキーが `demo` のままだと動作しません。**
+
+#### 方法A: 対話式スクリプトを使用
 ```bash
+./setup_api_key.sh
+```
+指示に従ってAPIキーを入力してください。
+
+#### 方法B: 手動で設定
+`.env` ファイルを編集:
+```bash
+nano .env
+```
+
+以下のように変更:
+```
 FMP_API_KEY=your_actual_api_key_here
 ```
 
-**重要:** `demo` APIキーは動作しません。無料のAPIキーは以下から取得できます:
-https://site.financialmodelingprep.com/developer/docs/
+#### APIキーの取得方法
+1. https://site.financialmodelingprep.com/developer/docs/ にアクセス
+2. 無料アカウントを作成（メールアドレスのみで登録可能）
+3. APIキーが自動的に生成されます
+4. そのAPIキーを `.env` ファイルに設定
+
+**無料プランでも十分使用可能です（300リクエスト/分）**
 
 ### 3. スクリプトの実行
 ```bash
@@ -59,12 +85,36 @@ python run_ibd_screeners.py
 
 ## 検証方法
 
-修正が正しく動作するか確認するには:
+### ステップ1: 基本的なAPIテスト
 ```bash
 python test_fmp_api.py
 ```
-
 このスクリプトは `requests` と `curl_cffi` の両方でAPIをテストし、違いを示します。
+
+### ステップ2: 実際のデータ取得テスト
+```bash
+python test_single_ticker.py
+```
+AAPL（Apple Inc.）のデータを取得してAPIキーと修正が正しく機能しているか確認します。
+
+**期待される出力:**
+```
+API Key: your_api_key_here
+API Key length: 32
+
+================================================================================
+テスト1: 株価データ取得 (AAPL)
+================================================================================
+✓ 成功: 300 日分のデータを取得
+  最新日付: 2025-11-12
+  最新価格: $XXX.XX
+...
+```
+
+**エラーの場合:**
+- `Status: 403` → APIキーが無効または `demo` のまま
+- `Status: 429` → レート制限に達しています（しばらく待機）
+- その他のエラー → ネットワークまたはAPI側の問題
 
 ## 注意事項
 
