@@ -8,7 +8,7 @@ SQLiteデータベースに保存します。
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
+from curl_cffi.requests import Session
 import pandas as pd
 import numpy as np
 
@@ -30,9 +30,11 @@ class IBDDataCollector:
         self.base_url = "https://financialmodelingprep.com/api/v3"
         self.rate_limiter = RateLimiter(max_calls_per_minute=750)
         self.db = IBDDatabase(db_path)
+        # curl_cffiセッションを初期化（Bot検出を回避するため）
+        self.session = Session(impersonate="chrome110")
 
     def fetch_with_rate_limit(self, url: str, params: dict = None) -> Optional[dict]:
-        """レート制限を考慮したAPIリクエスト"""
+        """レート制限を考慮したAPIリクエスト（curl_cffiを使用してBot検出を回避）"""
         self.rate_limiter.wait_if_needed()
 
         if params is None:
@@ -40,7 +42,7 @@ class IBDDataCollector:
         params['apikey'] = self.fmp_api_key
 
         try:
-            response = requests.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -496,6 +498,9 @@ class IBDDataCollector:
     def close(self):
         """リソースをクリーンアップ"""
         self.db.close()
+        # セッションをクローズ
+        if hasattr(self.session, 'close'):
+            self.session.close()
 
 
 def main():
