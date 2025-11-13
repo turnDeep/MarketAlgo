@@ -279,10 +279,22 @@ class IBDRatingsCalculator:
 
             # 4. ROE (Return on Equity、年次)
             # ROE = Net Income / Stockholders' Equity
-            # 注: Balance Sheetデータが必要だが、現在データベースに保存されていない
-            # この実装では、ROE計算をスキップするか、別途Balance Sheetデータを取得する必要がある
-            # 簡易的に、業界平均ROE 15%を仮定するか、計算を省略
-            result['roe_annual'] = None  # Balance Sheetデータが必要
+            balance_sheet = self.db.get_balance_sheet_annual(ticker, limit=1)
+
+            if balance_sheet and len(balance_sheet) > 0:
+                stockholders_equity = balance_sheet[0].get('total_stockholders_equity')
+                # total_stockholders_equityがNoneの場合、total_equityを代替として使用
+                if stockholders_equity is None:
+                    stockholders_equity = balance_sheet[0].get('total_equity')
+
+                if stockholders_equity and stockholders_equity > 0 and net_income_annual:
+                    # ROE = (Net Income / Stockholders' Equity) * 100
+                    roe_annual = (net_income_annual / stockholders_equity) * 100
+                    result['roe_annual'] = roe_annual
+                else:
+                    result['roe_annual'] = None
+            else:
+                result['roe_annual'] = None
 
             return result
 

@@ -32,7 +32,7 @@ def main():
     FMP_API_KEY = os.getenv('FMP_API_KEY')
     CREDENTIALS_FILE = os.getenv('CREDENTIALS_FILE', 'credentials.json')
     SPREADSHEET_NAME = os.getenv('SPREADSHEET_NAME', 'Market Dashboard')
-    MAX_WORKERS = int(os.getenv('ORATNEK_MAX_WORKERS', '3'))  # 750 calls/min制限に対応
+    MAX_WORKERS = int(os.getenv('ORATNEK_MAX_WORKERS', '3'))  # Default: 3 (Starter), Recommended: 6 (Premium), 10+ (Professional)
     DB_PATH = os.getenv('IBD_DB_PATH', 'ibd_data.db')
 
     # API KEYのチェック

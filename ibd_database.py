@@ -93,6 +93,23 @@ class IBDDatabase:
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_income_a_ticker_date ON income_statements_annual(ticker, date)')
 
+        # 4b. 年次貸借対照表テーブル (Balance Sheet)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS balance_sheet_annual (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                date DATE NOT NULL,
+                fiscal_year INTEGER,
+                total_assets REAL,
+                total_liabilities REAL,
+                total_stockholders_equity REAL,
+                total_equity REAL,
+                UNIQUE(ticker, date),
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_balance_ticker_date ON balance_sheet_annual(ticker, date)')
+
         # 5. 企業プロファイルテーブル
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS company_profiles (
@@ -374,6 +391,57 @@ class IBDDatabase:
         ''', (ticker,))
         count = cursor.fetchone()[0]
         return count >= min_quarters
+
+    # ==================== 貸借対照表 (Balance Sheet) ====================
+
+    def insert_balance_sheet_annual(self, ticker: str, statements: List[Dict]):
+        """年次貸借対照表を挿入"""
+        if not statements:
+            return
+
+        records = []
+        for stmt in statements:
+            records.append({
+                'ticker': ticker,
+                'date': stmt.get('date'),
+                'fiscal_year': stmt.get('calendarYear'),
+                'total_assets': stmt.get('totalAssets'),
+                'total_liabilities': stmt.get('totalLiabilities'),
+                'total_stockholders_equity': stmt.get('totalStockholdersEquity'),
+                'total_equity': stmt.get('totalEquity')
+            })
+
+        cursor = self.conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO balance_sheet_annual
+            (ticker, date, fiscal_year, total_assets, total_liabilities, total_stockholders_equity, total_equity)
+            VALUES (:ticker, :date, :fiscal_year, :total_assets, :total_liabilities, :total_stockholders_equity, :total_equity)
+        ''', records)
+        self.conn.commit()
+
+    def get_balance_sheet_annual(self, ticker: str, limit: int = 5) -> List[Dict]:
+        """年次貸借対照表を取得"""
+        query = '''
+            SELECT date, fiscal_year, total_assets, total_liabilities, total_stockholders_equity, total_equity
+            FROM balance_sheet_annual
+            WHERE ticker = ?
+            ORDER BY date DESC
+            LIMIT ?
+        '''
+        cursor = self.conn.cursor()
+        cursor.execute(query, (ticker, limit))
+        rows = cursor.fetchall()
+
+        return [dict(row) for row in rows]
+
+    def has_balance_sheet_data(self, ticker: str, min_years: int = 1) -> bool:
+        """指定された年数以上の貸借対照表データが存在するかチェック"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM balance_sheet_annual WHERE ticker = ?
+        ''', (ticker,))
+        count = cursor.fetchone()[0]
+        return count >= min_years
 
     # ==================== 企業プロファイル ====================
 
