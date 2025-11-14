@@ -134,7 +134,7 @@ class IBDDataCollector:
             if income_a:
                 db_conn.insert_income_statements_annual(ticker, income_a)
 
-            # 4. 年次貸借対照表取得 (Balance Sheet for ROE calculation)
+            # 4. 年次貸借対照表取得（ROE計算に使用）
             balance_sheet = self.get_balance_sheet(ticker, period='annual', limit=5)
             if balance_sheet:
                 db_conn.insert_balance_sheet_annual(ticker, balance_sheet)
@@ -374,7 +374,7 @@ class IBDDataCollector:
             else:
                 result['eps_growth_prev_qtr'] = None
 
-            # 3. 年間EPS成長率（3～5年CAGR）
+            # 3. 年間EPS成長率（3年CAGR）
             annual_growth_rate = None
             if income_statements_annual and len(income_statements_annual) >= 3:
                 try:

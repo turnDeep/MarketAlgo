@@ -49,8 +49,8 @@ def main():
     parser.add_argument('--calculate-ratings', action='store_true', help='レーティング計算を実行')
     parser.add_argument('--run-screeners', action='store_true', help='スクリーナーを実行')
     parser.add_argument('--test-mode', action='store_true', help='テストモード（500銘柄に制限）')
-    parser.add_argument('--debug', action='store_true', help='デバッグモード（詳細なエラー表示）')  # 追加
-    parser.add_argument('--sample', type=int, default=None, help='サンプル銘柄数（テスト用）')  # 追加
+    parser.add_argument('--debug', action='store_true', help='デバッグモード（詳細なエラー表示）')
+    parser.add_argument('--sample', type=int, default=None, help='サンプル銘柄数（テスト用）')
     args = parser.parse_args()
 
     # 引数がない場合は全ステップを実行
@@ -63,16 +63,16 @@ def main():
             print("ステップ1: データ収集")
             print("="*80)
 
-            collector = IBDDataCollector(FMP_API_KEY, db_path=DB_PATH, debug=args.debug)  # debug追加
+            collector = IBDDataCollector(FMP_API_KEY, db_path=DB_PATH, debug=args.debug)
 
-            # サンプルモードの追加
+            # サンプルモード
             if args.sample:
                 print(f"サンプルモード: 最初の{args.sample}銘柄のみ処理")
                 from get_tickers import FMPTickerFetcher
                 fetcher = FMPTickerFetcher()
                 tickers_df = fetcher.get_all_stocks(['nasdaq', 'nyse'])
                 sample_tickers = tickers_df['Ticker'].tolist()[:args.sample]
-                collected = collector.collect_all_data(sample_tickers, max_workers=1)  # ワーカー1で確実に
+                collected = collector.collect_all_data(sample_tickers, max_workers=1)
             else:
                 collector.run_full_collection(
                     use_full_dataset=not args.test_mode,

@@ -93,7 +93,7 @@ class IBDDatabase:
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_income_a_ticker_date ON income_statements_annual(ticker, date)')
 
-        # 4b. 年次貸借対照表テーブル (Balance Sheet)
+        # 4b. 年次貸借対照表テーブル
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS balance_sheet_annual (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -392,7 +392,7 @@ class IBDDatabase:
         count = cursor.fetchone()[0]
         return count >= min_quarters
 
-    # ==================== 貸借対照表 (Balance Sheet) ====================
+    # ==================== 貸借対照表 ====================
 
     def insert_balance_sheet_annual(self, ticker: str, statements: List[Dict]):
         """年次貸借対照表を挿入"""

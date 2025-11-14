@@ -85,13 +85,13 @@ class IBDRatingsCalculator:
         # 3. データベースに保存（後で一括更新）
         return rs_ratings_dict
 
-    # ==================== EPS Rating計算（オプション2: 正確な実装） ====================
+    # ==================== EPS Rating計算 ====================
 
     def calculate_eps_ratings(self) -> Dict[str, float]:
         """
         全銘柄のEPS Ratingを計算（パーセンタイルランキング方式）
 
-        オプション2の実装:
+        処理手順:
         1. データベースから全銘柄のEPS要素を取得
         2. 各要素を個別にパーセンタイルランキング（0-100）に変換
            - 最新四半期EPS成長率
@@ -556,15 +556,15 @@ class IBDRatingsCalculator:
 
     def calculate_industry_group_rs(self, ticker: str) -> Optional[Dict]:
         """
-        Industry Group RS（業界グループ相対強度）を計算（非推奨 - 旧実装）
+        Industry Group RS（業界グループ相対強度）を計算（旧実装・非推奨）
 
-        注意: このメソッドは現在使用されていません。
-        新しい実装では calculate_all_industry_group_rs() を使用してください。
+        注意: このメソッドは使用されていません。
+        現在は calculate_all_industry_group_rs() を使用しています。
 
-        旧計算方法（セクターパフォーマンスデータが必要で、データ不足で失敗する可能性がある）:
-        1. 銘柄のRS値（株価パフォーマンス）を取得
-        2. 銘柄が属するセクターのRS値を計算
-        3. Industry Group RS = 銘柄RS値 - セクターRS値（相対強度）
+        旧計算方法:
+        セクターパフォーマンスデータを使用してセクターRS値を計算し、
+        銘柄RS値との差分でIndustry Group RSを算出します。
+        データ不足により失敗する可能性が高いため、廃止されました。
 
         Args:
             ticker: ティッカーシンボル
@@ -693,7 +693,7 @@ class IBDRatingsCalculator:
 
         print(f"  {len(industry_avg_rs)} 業界グループ（3銘柄以上）のRS平均値を計算")
 
-        # 4. 業界平均RS値をパーセンタイルランキングに変換（1-100）
+        # 4. 業界平均RS値をパーセンタイルランキングに変換
         print("  業界グループRSをパーセンタイルランキングに変換中...")
         industry_rs_percentile = self.calculate_percentile_ranking(industry_avg_rs)
 
@@ -720,8 +720,7 @@ class IBDRatingsCalculator:
 
         print(f"  {success_count} 銘柄のIndustry Group RSを計算しました")
 
-        # 6. 各銘柄に業界のパーセンタイルランキングを返す
-        print("  Industry Group RSをパーセンタイルランキングに変換中...")
+        # 6. 各銘柄に業界のパーセンタイルランキングを割り当て
         industry_group_rs_dict = {}
         for ticker, (industry, _) in ticker_to_info.items():
             percentile = industry_rs_percentile.get(industry)
