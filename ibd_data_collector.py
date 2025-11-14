@@ -34,6 +34,7 @@ class IBDDataCollector:
         self.db_path = db_path
         self.db = IBDDatabase(self.db_path, silent=False)
         self.debug = debug
+        self.error_logs = []  # エラーログを記録するリスト
 
     def fetch_with_rate_limit(self, url: str, params: dict = None) -> Optional[dict]:
         """レート制限を考慮したAPIリクエスト"""
@@ -106,6 +107,17 @@ class IBDDataCollector:
 
     # ==================== データ収集（単一銘柄） ====================
 
+    def log_error(self, ticker: str, error_type: str, error_detail: str, api_endpoint: str = None):
+        """エラーログを記録"""
+        from datetime import datetime
+        self.error_logs.append({
+            'timestamp': datetime.now().isoformat(),
+            'ticker': ticker,
+            'error_type': error_type,
+            'error_detail': error_detail,
+            'api_endpoint': api_endpoint or 'N/A'
+        })
+
     def collect_ticker_data(self, ticker: str, db_conn: IBDDatabase) -> bool:
         """
         単一銘柄の全データを収集してDBに保存（スレッドセーフ）
@@ -116,8 +128,11 @@ class IBDDataCollector:
             if prices_df is not None and len(prices_df) >= 252:
                 db_conn.insert_price_history(ticker, prices_df)
             else:
+                days_count = len(prices_df) if prices_df is not None else 0
+                error_msg = f"株価データ不足: {days_count}日 (必要: 252日)"
+                self.log_error(ticker, 'DATA_INSUFFICIENT', error_msg, 'historical-price-full')
                 if self.debug:
-                    print(f"    {ticker}: 株価データ不足 (取得: {len(prices_df) if prices_df is not None else 0}日)")
+                    print(f"    {ticker}: {error_msg}")
                 return False
 
             # 2. 四半期損益計算書取得
@@ -125,30 +140,41 @@ class IBDDataCollector:
             if income_q and len(income_q) >= 5:
                 db_conn.insert_income_statements_quarterly(ticker, income_q)
             else:
+                quarters_count = len(income_q) if income_q else 0
+                error_msg = f"四半期損益計算書不足: {quarters_count}期 (必要: 5期)"
+                self.log_error(ticker, 'DATA_INSUFFICIENT', error_msg, 'income-statement?period=quarter')
                 if self.debug:
-                    print(f"    {ticker}: 四半期データ不足 (取得: {len(income_q) if income_q else 0}期)")
+                    print(f"    {ticker}: {error_msg}")
                 return False
 
             # 3. 年次損益計算書取得
             income_a = self.get_income_statement(ticker, period='annual', limit=5)
             if income_a:
                 db_conn.insert_income_statements_annual(ticker, income_a)
+            else:
+                self.log_error(ticker, 'DATA_WARNING', '年次損益計算書が取得できません', 'income-statement?period=annual')
 
             # 4. 年次貸借対照表取得（ROE計算に使用）
             balance_sheet = self.get_balance_sheet(ticker, period='annual', limit=5)
             if balance_sheet:
                 db_conn.insert_balance_sheet_annual(ticker, balance_sheet)
+            else:
+                self.log_error(ticker, 'DATA_WARNING', '年次貸借対照表が取得できません', 'balance-sheet-statement?period=annual')
 
             # 5. 企業プロファイル取得
             profile = self.get_company_profile(ticker)
             if profile:
                 db_conn.insert_company_profile(ticker, profile)
+            else:
+                self.log_error(ticker, 'DATA_WARNING', '企業プロファイルが取得できません', 'profile')
 
             return True
 
         except Exception as e:
+            error_msg = f"予期しないエラー: {str(e)}"
+            self.log_error(ticker, 'EXCEPTION', error_msg)
             if self.debug:
-                print(f"    {ticker}: エラー - {str(e)}")
+                print(f"    {ticker}: {error_msg}")
             return False
 
     # ==================== 並列データ収集 ====================
@@ -226,6 +252,35 @@ class IBDDataCollector:
         self.db.insert_tickers_bulk(tickers_data)
 
         return all_collected_tickers
+
+    def save_error_logs(self, filename: str = 'ibd_data_collection_errors.csv'):
+        """エラーログをCSVファイルに保存"""
+        if not self.error_logs:
+            print("\n  エラーログはありません")
+            return
+
+        import csv
+
+        # エラータイプ別の集計
+        error_type_counts = {}
+        for log in self.error_logs:
+            error_type = log['error_type']
+            error_type_counts[error_type] = error_type_counts.get(error_type, 0) + 1
+
+        # CSVファイルに保存
+        with open(filename, 'w', newline='', encoding='utf-8') as f:
+            fieldnames = ['timestamp', 'ticker', 'error_type', 'error_detail', 'api_endpoint']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(self.error_logs)
+
+        print(f"\n{'='*80}")
+        print(f"エラーログを保存しました: {filename}")
+        print(f"  総エラー数: {len(self.error_logs)}")
+        print(f"\n  エラータイプ別集計:")
+        for error_type, count in sorted(error_type_counts.items(), key=lambda x: x[1], reverse=True):
+            print(f"    {error_type}: {count} 件")
+        print(f"{'='*80}\n")
 
     # ==================== RS値の計算と保存 ====================
 
@@ -312,11 +367,21 @@ class IBDDataCollector:
                 income_a = self.db.get_income_statements_annual(ticker, limit=5)
 
                 if not income_q or len(income_q) < 5:
+                    quarters_count = len(income_q) if income_q else 0
+                    self.log_error(ticker, 'EPS_CALC_FAILED', f'四半期データ不足: {quarters_count}期 (必要: 5期)')
                     continue
 
                 # EPS要素を計算
                 eps_components = self.calculate_eps_components(income_q, income_a)
                 if eps_components:
+                    # 各要素の欠損を記録
+                    if eps_components['annual_growth_rate'] is None:
+                        annual_count = len(income_a) if income_a else 0
+                        self.log_error(ticker, 'EPS_ANNUAL_GROWTH_MISSING', f'年次データ不足または条件未達: {annual_count}期 (必要: 3期以上、全期間でEPS正)', 'annual_growth_rate')
+
+                    if eps_components['stability_score'] is None:
+                        self.log_error(ticker, 'EPS_STABILITY_MISSING', '安定性スコア計算不可: 8期中6期以上の正EPSが必要', 'stability_score')
+
                     self.db.insert_calculated_eps(
                         ticker,
                         eps_components['eps_growth_last_qtr'],
@@ -325,7 +390,10 @@ class IBDDataCollector:
                         eps_components['stability_score']
                     )
                     success_count += 1
+                else:
+                    self.log_error(ticker, 'EPS_CALC_FAILED', 'EPS要素の計算に失敗')
             except Exception as e:
+                self.log_error(ticker, 'EPS_CALC_EXCEPTION', f'予期しないエラー: {str(e)}')
                 continue
 
         print(f"  {success_count} 銘柄のEPS要素を計算しました\n")
@@ -509,6 +577,9 @@ class IBDDataCollector:
 
         # 6. 統計表示
         self.db.get_database_stats()
+
+        # 7. エラーログを保存
+        self.save_error_logs('ibd_data_collection_errors.csv')
 
         print(f"\n{'='*80}")
         print("全データ収集完了!")
