@@ -96,6 +96,20 @@ def main():
             print("ステップ3: スクリーナー実行")
             print("="*80)
 
+            # データ収集をスキップした場合、ベンチマークデータを確認
+            if not run_all and args.run_screeners and not args.collect_data:
+                print("\nベンチマークデータを確認中...")
+                from ibd_database import IBDDatabase
+                db = IBDDatabase(DB_PATH, silent=True)
+                spy_data = db.get_price_history('SPY', days=30)
+                db.close()
+
+                if spy_data is None or len(spy_data) < 25:
+                    print("⚠ SPYデータが不足しています。取得中...")
+                    collector = IBDDataCollector(FMP_API_KEY, db_path=DB_PATH)
+                    collector.collect_benchmark_data(['SPY'])
+                    collector.close()
+
             screeners = IBDScreeners(
                 credentials_file=CREDENTIALS_FILE,
                 spreadsheet_name=SPREADSHEET_NAME,

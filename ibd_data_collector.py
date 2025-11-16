@@ -467,22 +467,69 @@ class IBDDataCollector:
         else:
             print("  保存するデータがありませんでした")
 
+    # ==================== ベンチマークデータ収集 ====================
+
+    def collect_benchmark_data(self, benchmark_tickers: List[str] = None):
+        """
+        ベンチマークティッカー（SPY、QQQなど）のデータを収集
+
+        Args:
+            benchmark_tickers: ベンチマークティッカーのリスト（デフォルト: ['SPY', 'QQQ', 'DIA']）
+        """
+        if benchmark_tickers is None:
+            benchmark_tickers = ['SPY', 'QQQ', 'DIA']
+
+        print(f"\n{'='*80}")
+        print(f"ベンチマークデータを収集中: {', '.join(benchmark_tickers)}")
+        print(f"{'='*80}")
+
+        db_conn = IBDDatabase(self.db_path, silent=True)
+        success_count = 0
+
+        for ticker in benchmark_tickers:
+            try:
+                print(f"  {ticker} のデータを取得中...")
+
+                # 株価データ取得（300日分）
+                prices_df = self.get_historical_prices(ticker, days=300)
+                if prices_df is not None and len(prices_df) >= 30:
+                    db_conn.insert_price_history(ticker, prices_df)
+                    print(f"    ✓ {ticker}: {len(prices_df)}日分のデータを保存")
+                    success_count += 1
+                else:
+                    print(f"    ✗ {ticker}: データ取得失敗")
+
+            except Exception as e:
+                if self.debug:
+                    print(f"    ✗ {ticker}: エラー - {str(e)}")
+
+        db_conn.close()
+
+        print(f"\nベンチマークデータ収集完了: {success_count}/{len(benchmark_tickers)} 成功")
+        print(f"{'='*80}\n")
+
+        return success_count
+
     # ==================== メインワークフロー ====================
 
     def run_full_collection(self, use_full_dataset: bool = True, max_workers: int = 3):
         """
         完全なデータ収集ワークフローを実行
 
-        1. ティッカーリスト取得
-        2. 全データ収集（株価、EPS、プロファイル）
-        3. RS値計算
-        4. EPS要素計算
+        1. ベンチマークデータ収集（SPY、QQQなど）
+        2. ティッカーリスト取得
+        3. 全データ収集（株価、EPS、プロファイル）
+        4. RS値計算
+        5. EPS要素計算
 
         Args:
             use_full_dataset: 全銘柄を処理するか（Falseの場合は500銘柄に制限）
             max_workers: 並列処理のワーカー数（デフォルト3: 750 calls/min制限に対応）
         """
-        # 1. ティッカーリスト取得
+        # 1. ベンチマークデータ収集（最優先）
+        self.collect_benchmark_data()
+
+        # 2. ティッカーリスト取得
         print("\nティッカーリストを取得中...")
         fetcher = FMPTickerFetcher()
         tickers_df = fetcher.get_all_stocks(['nasdaq', 'nyse'])
@@ -495,19 +542,19 @@ class IBDDataCollector:
             tickers_list = tickers_list[:sample_size]
             print(f"  テストモード: {sample_size} 銘柄に制限")
 
-        # 2. データ収集
+        # 3. データ収集
         collected_tickers = self.collect_all_data(tickers_list, max_workers=max_workers)
 
-        # 3. セクターパフォーマンスデータ収集
+        # 4. セクターパフォーマンスデータ収集
         self.collect_sector_performance_data(limit=300)
 
-        # 4. RS値計算
+        # 5. RS値計算
         self.calculate_and_store_rs_values(collected_tickers)
 
-        # 5. EPS要素計算
+        # 6. EPS要素計算
         self.calculate_and_store_eps_components(collected_tickers)
 
-        # 6. 統計表示
+        # 7. 統計表示
         self.db.get_database_stats()
 
         print(f"\n{'='*80}")
