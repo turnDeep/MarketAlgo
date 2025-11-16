@@ -138,24 +138,31 @@ class IBDScreeners:
         if benchmark_prices is None or target_prices is None:
             return None
 
-        # 両方のデータフレームの長さを揃える
-        min_len = min(len(benchmark_prices), len(target_prices))
-        if min_len == 0:
+        # 日付でマージして共通の日付のみを使用（重要：日付の不一致を防ぐ）
+        import pandas as pd
+        merged = pd.merge(
+            benchmark_prices[['date', 'close']].rename(columns={'close': 'benchmark_close'}),
+            target_prices[['date', 'close']].rename(columns={'close': 'target_close'}),
+            on='date',
+            how='inner'
+        )
+
+        if len(merged) == 0:
             return None
 
-        benchmark = benchmark_prices['close'].tail(min_len).values
-        target = target_prices['close'].tail(min_len).values
+        # 最新のdays日分を使用
+        if len(merged) > days:
+            merged = merged.tail(days)
 
-        # 最新のdays個のデータを使用
-        if len(benchmark) > days:
-            benchmark = benchmark[-days:]
-            target = target[-days:]
+        # データが不足している場合
+        if len(merged) < days:
+            return None
 
         # ゼロ除算を防ぐ
-        if np.any(benchmark == 0):
+        if (merged['benchmark_close'] == 0).any():
             return None
 
-        rs = target / benchmark
+        rs = merged['target_close'].values / merged['benchmark_close'].values
         return rs
 
     def calculate_rs_sts_percentile(self, rs_values):
@@ -176,13 +183,14 @@ class IBDScreeners:
 
         return round(percentile, 2)
 
-    def get_rs_sts_percentile(self, ticker: str, benchmark_ticker: str = 'SPY') -> Optional[float]:
+    def get_rs_sts_percentile(self, ticker: str, benchmark_ticker: str = 'SPY', debug: bool = False) -> Optional[float]:
         """
         指定銘柄のRS STS%を計算
 
         Args:
             ticker: ターゲット銘柄
             benchmark_ticker: ベンチマーク銘柄（デフォルト: SPY）
+            debug: デバッグ情報を出力するか
 
         Returns:
             float: RS STS%（0-100）、計算できない場合はNone
@@ -191,16 +199,25 @@ class IBDScreeners:
         benchmark_prices = self.db.get_price_history(benchmark_ticker, days=30)
         ticker_prices = self.db.get_price_history(ticker, days=30)
 
-        if benchmark_prices is None or ticker_prices is None:
+        if benchmark_prices is None:
+            if debug:
+                print(f"    DEBUG: {ticker} - Benchmark ({benchmark_ticker}) price data is None")
+            return None
+
+        if ticker_prices is None:
+            if debug:
+                print(f"    DEBUG: {ticker} - Ticker price data is None")
             return None
 
         if len(benchmark_prices) < 25 or len(ticker_prices) < 25:
+            if debug:
+                print(f"    DEBUG: {ticker} - Insufficient data (benchmark: {len(benchmark_prices)}, ticker: {len(ticker_prices)})")
             return None
 
-        # RSを計算
+        # RSを計算（全データを渡して、calculate_relative_strength内で日付マージ後に25日分を使用）
         rs_values = self.calculate_relative_strength(
             benchmark_prices,
-            ticker_prices.tail(25),
+            ticker_prices,
             days=25
         )
 
@@ -286,6 +303,15 @@ class IBDScreeners:
         passed = []
         all_ratings = self.db.get_all_ratings()
 
+        # デバッグ: 最初の銘柄でRS STS%をテスト
+        import os
+        debug_mode = os.getenv('IBD_DEBUG', 'false').lower() == 'true'
+        if debug_mode and len(all_ratings) > 0:
+            test_ticker = list(all_ratings.keys())[0]
+            print(f"\n  DEBUG: Testing RS STS% calculation for {test_ticker}")
+            test_rs_sts = self.get_rs_sts_percentile(test_ticker, debug=True)
+            print(f"  DEBUG: Result: {test_rs_sts}\n")
+
         for ticker, rating in all_ratings.items():
             try:
                 # RS Rating チェック
@@ -294,7 +320,11 @@ class IBDScreeners:
 
                 # RS STS% チェック
                 rs_sts = self.get_rs_sts_percentile(ticker)
-                if rs_sts is None or rs_sts < 80:
+                if rs_sts is None:
+                    print(f"  DEBUG: {ticker} - RS STS% is None (データ不足またはエラー)")
+                    continue
+                if rs_sts < 80:
+                    print(f"  DEBUG: {ticker} - RS STS% = {rs_sts:.2f} < 80")
                     continue
 
                 # EPS Growth チェック
@@ -351,7 +381,11 @@ class IBDScreeners:
 
                 # RS STS% チェック
                 rs_sts = self.get_rs_sts_percentile(ticker)
-                if rs_sts is None or rs_sts < 80:
+                if rs_sts is None:
+                    print(f"  DEBUG: {ticker} - RS STS% is None (データ不足またはエラー)")
+                    continue
+                if rs_sts < 80:
+                    print(f"  DEBUG: {ticker} - RS STS% = {rs_sts:.2f} < 80")
                     continue
 
                 # A/D Rating チェック
@@ -430,7 +464,11 @@ class IBDScreeners:
 
                 # RS STS% チェック
                 rs_sts = self.get_rs_sts_percentile(ticker)
-                if rs_sts is None or rs_sts < 80:
+                if rs_sts is None:
+                    print(f"  DEBUG: {ticker} - RS STS% is None (データ不足またはエラー)")
+                    continue
+                if rs_sts < 80:
+                    print(f"  DEBUG: {ticker} - RS STS% = {rs_sts:.2f} < 80")
                     continue
 
                 # 移動平均チェック
@@ -526,7 +564,11 @@ class IBDScreeners:
 
                 # RS STS% チェック
                 rs_sts = self.get_rs_sts_percentile(ticker)
-                if rs_sts is None or rs_sts < 80:
+                if rs_sts is None:
+                    print(f"  DEBUG: {ticker} - RS STS% is None (データ不足またはエラー)")
+                    continue
+                if rs_sts < 80:
+                    print(f"  DEBUG: {ticker} - RS STS% = {rs_sts:.2f} < 80")
                     continue
 
                 passed.append(ticker)
