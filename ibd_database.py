@@ -291,6 +291,20 @@ class IBDDatabase:
             return df
         return None
 
+    def get_latest_price_date(self) -> Optional[str]:
+        """最新の価格データの日付を取得"""
+        query = '''
+            SELECT MAX(date) as latest_date
+            FROM price_history
+        '''
+        cursor = self.conn.cursor()
+        cursor.execute(query)
+        result = cursor.fetchone()
+
+        if result and result['latest_date']:
+            return result['latest_date']
+        return None
+
     def has_price_data(self, ticker: str, min_days: int = 252) -> bool:
         """指定された日数以上の株価データが存在するかチェック"""
         cursor = self.conn.cursor()

@@ -723,7 +723,15 @@ class IBDScreeners:
 
     def write_screeners_to_sheet(self, screener_results: Dict[str, List[str]]):
         """スクリーナー結果をGoogleスプレッドシートに出力"""
-        sheet_name = 'IBD Screeners'
+        # データベースから最新の価格データ日付を取得してシート名とする
+        latest_date = self.db.get_latest_price_date()
+        if latest_date:
+            # YYYY-MM-DD形式にフォーマット
+            sheet_name = latest_date
+        else:
+            # 日付が取得できない場合はデフォルト名を使用
+            sheet_name = 'IBD Screeners'
+
         try:
             worksheet = self.spreadsheet.worksheet(sheet_name)
             worksheet.clear()
