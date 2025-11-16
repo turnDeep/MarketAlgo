@@ -639,11 +639,68 @@ class IBDScreeners:
 
     # ==================== メイン実行関数 ====================
 
+    def ensure_benchmark_data(self, benchmark_ticker: str = 'SPY'):
+        """
+        ベンチマークデータが存在することを確認し、なければ取得
+
+        Args:
+            benchmark_ticker: ベンチマークティッカー（デフォルト: SPY）
+
+        Returns:
+            bool: データが存在するか
+        """
+        # データベースにデータが存在するか確認
+        benchmark_prices = self.db.get_price_history(benchmark_ticker, days=30)
+
+        if benchmark_prices is not None and len(benchmark_prices) >= 25:
+            print(f"✓ {benchmark_ticker} データは既に存在します ({len(benchmark_prices)}日分)")
+            return True
+
+        # データが存在しない場合、取得を試みる
+        print(f"\n⚠ {benchmark_ticker} データが存在しません。取得中...")
+
+        try:
+            import os
+            from dotenv import load_dotenv
+            from ibd_data_collector import IBDDataCollector
+
+            load_dotenv()
+            fmp_api_key = os.getenv('FMP_API_KEY')
+
+            if not fmp_api_key or fmp_api_key == 'your_api_key_here':
+                print(f"✗ エラー: FMP_API_KEYが設定されていません")
+                print(f"  RS STS%の計算には{benchmark_ticker}のデータが必須です")
+                return False
+
+            collector = IBDDataCollector(fmp_api_key, db_path=self.db.db_path)
+            success = collector.collect_benchmark_data([benchmark_ticker])
+            collector.close()
+
+            if success > 0:
+                print(f"✓ {benchmark_ticker} データの取得に成功しました")
+                return True
+            else:
+                print(f"✗ {benchmark_ticker} データの取得に失敗しました")
+                return False
+
+        except Exception as e:
+            print(f"✗ ベンチマークデータ取得エラー: {str(e)}")
+            return False
+
     def run_all_screeners(self):
         """全スクリーナーを実行してGoogleスプレッドシートに出力"""
         print("\n" + "="*80)
         print("IBD スクリーナー実行開始")
         print("="*80)
+
+        # ベンチマークデータの確認・取得
+        print("\nベンチマークデータを確認中...")
+        if not self.ensure_benchmark_data('SPY'):
+            print("\n⚠ 警告: SPYデータが取得できませんでした")
+            print("  RS STS%を使用するスクリーナーの結果が制限される可能性があります")
+            print("  続行しますか? (Ctrl+C で中止)")
+            import time
+            time.sleep(3)
 
         # 各スクリーナーを実行
         screener_results = {}
