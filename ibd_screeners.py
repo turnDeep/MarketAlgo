@@ -123,6 +123,93 @@ class IBDScreeners:
         except:
             return None
 
+    def calculate_relative_strength(self, benchmark_prices, target_prices, days=25):
+        """
+        相対強度(RS)を計算
+
+        Args:
+            benchmark_prices: ベンチマークの価格データ（DataFrame）
+            target_prices: ターゲット銘柄の価格データ（DataFrame）
+            days: 使用する日数
+
+        Returns:
+            np.array: 日次のRS比率の配列
+        """
+        if benchmark_prices is None or target_prices is None:
+            return None
+
+        # 両方のデータフレームの長さを揃える
+        min_len = min(len(benchmark_prices), len(target_prices))
+        if min_len == 0:
+            return None
+
+        benchmark = benchmark_prices['close'].tail(min_len).values
+        target = target_prices['close'].tail(min_len).values
+
+        # 最新のdays個のデータを使用
+        if len(benchmark) > days:
+            benchmark = benchmark[-days:]
+            target = target[-days:]
+
+        # ゼロ除算を防ぐ
+        if np.any(benchmark == 0):
+            return None
+
+        rs = target / benchmark
+        return rs
+
+    def calculate_rs_sts_percentile(self, rs_values):
+        """
+        RS STS % (パーセンタイル)を計算
+
+        Args:
+            rs_values: RS値の配列
+
+        Returns:
+            float: パーセンタイル（0-100）
+        """
+        if rs_values is None or len(rs_values) == 0:
+            return 0
+
+        latest_rs = rs_values[-1]
+        percentile = (np.sum(rs_values <= latest_rs) / len(rs_values)) * 100
+
+        return round(percentile, 2)
+
+    def get_rs_sts_percentile(self, ticker: str, benchmark_ticker: str = 'SPY') -> Optional[float]:
+        """
+        指定銘柄のRS STS%を計算
+
+        Args:
+            ticker: ターゲット銘柄
+            benchmark_ticker: ベンチマーク銘柄（デフォルト: SPY）
+
+        Returns:
+            float: RS STS%（0-100）、計算できない場合はNone
+        """
+        # ベンチマークと銘柄の価格データを取得
+        benchmark_prices = self.db.get_price_history(benchmark_ticker, days=30)
+        ticker_prices = self.db.get_price_history(ticker, days=30)
+
+        if benchmark_prices is None or ticker_prices is None:
+            return None
+
+        if len(benchmark_prices) < 25 or len(ticker_prices) < 25:
+            return None
+
+        # RSを計算
+        rs_values = self.calculate_relative_strength(
+            benchmark_prices,
+            ticker_prices.tail(25),
+            days=25
+        )
+
+        if rs_values is None:
+            return None
+
+        # RS STS%を計算
+        return self.calculate_rs_sts_percentile(rs_values)
+
     def check_rs_line_new_high(self, ticker: str) -> bool:
         """RS Lineが新高値かチェック"""
         # 簡易版: 52週高値に近いかで判定
@@ -189,6 +276,7 @@ class IBDScreeners:
 
         条件:
         - RS Rating ≥ 80
+        - RS STS% ≥ 80
         - EPS Growth Last Qtr ≥ 100%
         - 50-Day Avg Vol ≥ 100K
         - Price vs 50-Day ≥ 0.0%
@@ -202,6 +290,11 @@ class IBDScreeners:
             try:
                 # RS Rating チェック
                 if rating['rs_rating'] is None or rating['rs_rating'] < 80:
+                    continue
+
+                # RS STS% チェック
+                rs_sts = self.get_rs_sts_percentile(ticker)
+                if rs_sts is None or rs_sts < 80:
                     continue
 
                 # EPS Growth チェック
@@ -241,6 +334,7 @@ class IBDScreeners:
         - 50-Day Avg Vol ≥ 100K
         - Market Cap ≥ $250M
         - RS Rating ≥ 80
+        - RS STS% ≥ 80
         - EPS % Chg Last Qtr ≥ 20%
         - A/D Rating ABC
         """
@@ -253,6 +347,11 @@ class IBDScreeners:
             try:
                 # RS Rating チェック
                 if rating['rs_rating'] is None or rating['rs_rating'] < 80:
+                    continue
+
+                # RS STS% チェック
+                rs_sts = self.get_rs_sts_percentile(ticker)
+                if rs_sts is None or rs_sts < 80:
                     continue
 
                 # A/D Rating チェック
@@ -312,6 +411,7 @@ class IBDScreeners:
 
         条件:
         - RS Rating ≥ 98
+        - RS STS% ≥ 80
         - 10Day > 21Day > 50Day
         - 50-Day Avg Vol ≥ 100K
         - Volume ≥ 100K
@@ -326,6 +426,11 @@ class IBDScreeners:
             try:
                 # RS Rating チェック
                 if rating['rs_rating'] is None or rating['rs_rating'] < 98:
+                    continue
+
+                # RS STS% チェック
+                rs_sts = self.get_rs_sts_percentile(ticker)
+                if rs_sts is None or rs_sts < 80:
                     continue
 
                 # 移動平均チェック
@@ -373,6 +478,7 @@ class IBDScreeners:
         - Rel Volume > 1
         - Change from Open > 0%
         - Avg Volume 90D > 100K
+        - RS STS% ≥ 80
         """
         print("\n=== 4% Bullish Yesterday スクリーナー実行中 ===")
 
@@ -416,6 +522,11 @@ class IBDScreeners:
 
                 market_cap_millions = profile['market_cap'] / 1_000_000
                 if market_cap_millions <= 250:
+                    continue
+
+                # RS STS% チェック
+                rs_sts = self.get_rs_sts_percentile(ticker)
+                if rs_sts is None or rs_sts < 80:
                     continue
 
                 passed.append(ticker)
